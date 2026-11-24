@@ -1,0 +1,90 @@
+const mongoose = require('mongoose');
+
+const ExpenseSchema = new mongoose.Schema(
+  {
+    expenseId: { type: String, required: true, unique: true, index: true },
+    title: { type: String, required: true, trim: true },
+    description: { type: String, trim: true },
+    amount: { type: Number, required: true, min: 1 },
+    currency: { type: String, default: 'PKR' },
+    category: {
+      type: String,
+      required: true,
+      enum: [
+        'Event Expenses',
+        'Printing & Publications',
+        'Travel & Logistics',
+        'Marketing & Promotion',
+        'Equipment & Assets',
+        'Office Supplies',
+        'Honorarium & Refreshments',
+        'Operations & Maintenance',
+        'Other',
+      ],
+      default: 'Other',
+      index: true,
+    },
+    department: {
+      type: String,
+      required: true,
+      enum: [
+        'Literature',
+        'Media',
+        'Marketing',
+        'Outreach',
+        'Content Creation',
+        'HR',
+        'Finance',
+        'General',
+        'Administration',
+      ],
+      index: true,
+    },
+    eventId: { type: mongoose.Schema.Types.ObjectId, ref: 'Event' },
+    eventTitle: { type: String },
+    receipts: [
+      {
+        url: { type: String },
+        filename: { type: String },
+        uploadDate: { type: Date, default: Date.now },
+      },
+    ],
+    receiptUrl: { type: String },
+    budgetId: { type: String, index: true },
+    fiscalYear: { type: String, index: true },
+    budgetCategory: { type: String },
+    isArchived: { type: Boolean, default: false, index: true },
+    status: {
+      type: String,
+      enum: ['pending', 'approved', 'rejected', 'paid', 'reimbursed'],
+      default: 'pending',
+      index: true,
+    },
+    submittedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true, index: true },
+    submittedByName: { type: String, required: true },
+    submittedByEmail: { type: String, lowercase: true, trim: true },
+    submittedByRole: { type: String },
+    date: { type: Date, default: Date.now },
+    reviewedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+    reviewedByName: { type: String },
+    reviewedAt: { type: Date },
+    reviewNotes: { type: String },
+    disbursedAt: { type: Date },
+    disbursedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+    disbursedNotes: { type: String },
+    history: [
+      {
+        status: { type: String, required: true },
+        previousStatus: { type: String },
+        changedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+        changedByName: { type: String },
+        changedByRole: { type: String },
+        notes: { type: String },
+        timestamp: { type: Date, default: Date.now },
+      },
+    ],
+  },
+  { timestamps: true }
+);
+
+module.exports = mongoose.models.Expense || mongoose.model('Expense', ExpenseSchema);

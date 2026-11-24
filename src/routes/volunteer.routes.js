@@ -3,6 +3,7 @@ const router = express.Router();
 const { Application, AuditLog } = require('../models');
 const { sendEmail } = require('../services/email.service');
 const { appendToGoogleSheet } = require('../services/sheets.service');
+const { setMemoryApplication, getMemoryApplicationsList } = require('./hr.routes');
 
 function escapeCsv(val) {
   let str = String(val ?? '');
@@ -24,7 +25,35 @@ router.post('/', async (req, res) => {
       return res.status(400).json({ success: false, error: 'Please fill in all required fields.' });
     }
 
-    const submissionId = `SUB_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
+    const submissionId = body.submissionId || `SUB_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
+
+    // Duplicate Prevention Check:
+    let existingApp = null;
+    try {
+      existingApp = await Application.findOne({
+        $or: [
+          { submissionId },
+          { email: email.toLowerCase().trim(), status: { $in: ['submitted', 'pending', 'under_review'] } },
+        ],
+      });
+    } catch {}
+
+    if (!existingApp) {
+      existingApp = getMemoryApplicationsList().find(
+        (a) =>
+          a.submissionId === submissionId ||
+          (a.email === email.toLowerCase().trim() && ['submitted', 'pending', 'under_review'].includes(a.status))
+      );
+    }
+
+    if (existingApp) {
+      return res.json({
+        success: true,
+        message: 'Application already received and registered in HR Recruitment Portal.',
+        submissionId: existingApp.submissionId || submissionId,
+        duplicate: true,
+      });
+    }
 
     // 1. Persist to MongoDB Atlas
     let appRecord = await Application.create({
@@ -43,6 +72,26 @@ router.post('/', async (req, res) => {
       console.warn('[MongoDB Notice] Application saved offline:', e.message);
       return null;
     });
+
+    if (!appRecord) {
+      appRecord = {
+        _id: submissionId,
+        id: submissionId,
+        fullName,
+        email: email.toLowerCase().trim(),
+        phoneNumber: phone,
+        instagramId: body.instagramId || '',
+        city: city || '',
+        age: body.age || '',
+        areaOfInterest,
+        motivation: motivation || '',
+        source: 'website_volunteer_form',
+        status: 'submitted',
+        submissionId,
+        createdAt: new Date(),
+      };
+      setMemoryApplication(appRecord);
+    }
 
     // 2. Audit Log
     await AuditLog.create({

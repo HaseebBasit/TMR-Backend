@@ -1,6 +1,10 @@
 const nodemailer = require('nodemailer');
 
 function getTransporter() {
+  if (process.env.EMAIL_DISABLED === 'true') {
+    return null;
+  }
+
   const host = process.env.SMTP_HOST || 'smtp.gmail.com';
   const port = Number(process.env.SMTP_PORT) || 587;
   const user = process.env.SMTP_USER;
@@ -19,6 +23,11 @@ function getTransporter() {
 }
 
 async function sendEmail({ to, subject, text, html, attachments }) {
+  if (process.env.EMAIL_DISABLED === 'true') {
+    console.log(`[Email Service Sink] Email disabled via EMAIL_DISABLED=true. Suppressed outbound email for: ${to} (Subject: "${subject}")`);
+    return { success: true, mode: 'disabled_sink', messageId: `mock-sink-${Date.now()}` };
+  }
+
   const transporter = getTransporter();
   const from = process.env.SMTP_FROM || `"Ta'meer-e-Rekhta" <${process.env.SMTP_USER || 'no-reply@rekhta.org'}>`;
 
