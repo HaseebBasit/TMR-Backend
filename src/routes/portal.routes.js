@@ -51,48 +51,7 @@ const {
 // In-Memory Task & Department Stores for Offline/Controlled Config Mode
 // ---------------------------------------------------------------------------
 const memoryTasks = new Map();
-const memoryDepartments = [
-  {
-    name: 'Literature',
-    code: 'LIT',
-    description: 'Reviving Urdu poetry, prose, and literary discourse.',
-    leadName: 'Noor-ul-Huda',
-    status: 'active',
-    iconName: 'BookOpen',
-  },
-  {
-    name: 'Media',
-    code: 'MED',
-    description: 'Photography, videography, graphic design, and video production.',
-    leadName: 'Aisha Tariq',
-    status: 'active',
-    iconName: 'Camera',
-  },
-  {
-    name: 'Marketing',
-    code: 'MKT',
-    description: 'Digital campaigns, social media growth, and branding.',
-    leadName: 'Ahmad Raza Waseem',
-    status: 'active',
-    iconName: 'TrendingUp',
-  },
-  {
-    name: 'Outreach',
-    code: 'OUT',
-    description: 'Community welfare, youth events, and relief distribution.',
-    leadName: 'Asfand Yar Karimi',
-    status: 'active',
-    iconName: 'HeartHandshake',
-  },
-  {
-    name: 'Content Creation',
-    code: 'CON',
-    description: 'Urdu scripting, editorial copywriting, and Gen-Z series.',
-    leadName: 'Salman Mallana',
-    status: 'active',
-    iconName: 'PenTool',
-  },
-];
+const memoryDepartments = [];
 
 const getMemoryTasksList = () => Array.from(memoryTasks.values());
 const setMemoryTask = (task) => {
@@ -100,7 +59,7 @@ const setMemoryTask = (task) => {
   if (task.id) memoryTasks.set(task.id.toString(), task);
 };
 
-// Seed an initial task in memory store for offline mode
+// Audit logs in-memory store for fallback/tests
 const memoryAuditLogs = [];
 const getMemoryAuditLogsList = () => [...memoryAuditLogs];
 const recordMemoryAuditLog = (entry) => {
@@ -111,54 +70,6 @@ const recordMemoryAuditLog = (entry) => {
   });
   if (memoryAuditLogs.length > 200) memoryAuditLogs.pop();
 };
-
-if (memoryAuditLogs.length === 0) {
-  recordMemoryAuditLog({
-    actorName: 'System Kernel',
-    actorRole: 'system',
-    action: 'SYSTEM_BOOT',
-    module: 'CORE',
-    description: 'Portal engine initialized in controlled configuration-check mode.',
-  });
-}
-
-if (memoryTasks.size === 0) {
-  const initialTask = {
-    _id: '507f191e810c19729de860f1',
-    id: '507f191e810c19729de860f1',
-    title: 'Urdu Gen-Z Video Series Episode 1',
-    description: 'Script and record the initial episode focusing on classical Urdu idioms in modern contexts.',
-    instructions: 'Prepare complete screenplay draft with timestamped scene breakdown and recorded audio rehearsal.',
-    department: 'Media',
-    departmentCode: 'MED',
-    originalDepartment: 'Media',
-    originalDepartmentCode: 'MED',
-    priority: 'high',
-    status: 'assigned',
-    assignedTo: '507f191e810c19729de860e6',
-    assignedMemberName: 'Member Alice',
-    createdByName: 'Aisha Tariq',
-    createdByRole: 'dept_media',
-    dueDate: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
-    currentVersion: 0,
-    submissions: [],
-    referrals: [],
-    requiredDeliverables: ['video', 'audio', 'document'],
-    referenceAttachments: [],
-    history: [
-      {
-        status: 'assigned',
-        updatedBy: 'Aisha Tariq',
-        role: 'dept_media',
-        notes: 'Task initialized and assigned to Media team.',
-        timestamp: new Date(),
-      },
-    ],
-    createdAt: new Date(),
-    updatedAt: new Date(),
-  };
-  setMemoryTask(initialTask);
-}
 
 // ---------------------------------------------------------------------------
 // 1. PUBLIC / GENERAL PORTAL ROUTES
@@ -171,10 +82,7 @@ router.get('/departments', async (req, res) => {
     departments = await Department.find({ status: 'active' }).sort({ name: 1 });
   } catch {}
 
-  if (!departments || departments.length === 0) {
-    departments = memoryDepartments;
-  }
-  return res.json({ success: true, departments });
+  return res.json({ success: true, departments: departments || [] });
 });
 
 // Notifications - Personal User Notifications & Management
@@ -242,23 +150,29 @@ router.get('/super-admin/overview', protect, authorize('super_admin'), async (re
     const revisionCount = tasks.filter((t) => t.status === 'revision_requested').length;
     const completedTasksCount = tasks.filter((t) => ['approved', 'completed'].includes(t.status)).length;
 
-    // 3. Department Breakdown
-    const departmentDistribution = memoryDepartments.map((dept) => {
+    // 3. Department Breakdown (Dynamically loaded from Database)
+    let activeDepts = [];
+    try {
+      activeDepts = await Department.find({ status: 'active' }).sort({ name: 1 });
+    } catch {}
+
+    const departmentDistribution = activeDepts.map((dept) => {
+      const doc = dept.toObject ? dept.toObject() : dept;
       const deptMembers = users.filter(
         (u) =>
-          u.department?.toLowerCase() === dept.name.toLowerCase() ||
-          u.departmentCode?.toUpperCase() === dept.code.toUpperCase()
+          u.department?.toLowerCase() === doc.name.toLowerCase() ||
+          u.departmentCode?.toUpperCase() === doc.code?.toUpperCase()
       );
       const deptTasks = tasks.filter(
         (t) =>
-          t.department?.toLowerCase() === dept.name.toLowerCase() ||
-          t.departmentCode?.toUpperCase() === dept.code.toUpperCase()
+          t.department?.toLowerCase() === doc.name.toLowerCase() ||
+          t.departmentCode?.toUpperCase() === doc.code?.toUpperCase()
       );
       return {
-        name: dept.name,
-        code: dept.code,
-        leadName: dept.leadName,
-        iconName: dept.iconName,
+        name: doc.name,
+        code: doc.code,
+        leadName: doc.leadName || 'Unassigned',
+        iconName: doc.iconName || 'Folder',
         memberCount: deptMembers.length,
         activeTasks: deptTasks.filter((t) => !['completed', 'approved'].includes(t.status)).length,
         completedTasks: deptTasks.filter((t) => ['completed', 'approved'].includes(t.status)).length,
@@ -834,19 +748,25 @@ router.get('/super-admin/departments', protect, authorize('super_admin'), async 
   } catch {}
   if (!tasks || tasks.length === 0) tasks = getMemoryTasksList();
 
-  const departmentsWithMetrics = memoryDepartments.map((dept) => {
+  let depts = [];
+  try {
+    depts = await Department.find().sort({ name: 1 });
+  } catch {}
+
+  const departmentsWithMetrics = depts.map((dept) => {
+    const doc = dept.toObject ? dept.toObject() : dept;
     const deptMembers = users.filter(
       (u) =>
-        u.department?.toLowerCase() === dept.name.toLowerCase() ||
-        u.departmentCode?.toUpperCase() === dept.code.toUpperCase()
+        u.department?.toLowerCase() === doc.name.toLowerCase() ||
+        u.departmentCode?.toUpperCase() === doc.code?.toUpperCase()
     );
     const deptTasks = tasks.filter(
       (t) =>
-        t.department?.toLowerCase() === dept.name.toLowerCase() ||
-        t.departmentCode?.toUpperCase() === dept.code.toUpperCase()
+        t.department?.toLowerCase() === doc.name.toLowerCase() ||
+        t.departmentCode?.toUpperCase() === doc.code?.toUpperCase()
     );
     return {
-      ...dept,
+      ...doc,
       memberCount: deptMembers.length,
       activeTasksCount: deptTasks.filter((t) => !['completed', 'approved'].includes(t.status)).length,
       completedTasksCount: deptTasks.filter((t) => ['completed', 'approved'].includes(t.status)).length,

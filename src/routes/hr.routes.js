@@ -105,24 +105,7 @@ const VALID_DEPARTMENTS = [
   'Finance',
 ];
 
-// Seed initial memory campaigns if empty
-if (memoryCampaigns.size === 0) {
-  const defaultCampaign = {
-    _id: 'camp_init_01',
-    id: 'camp_init_01',
-    title: "Ta'meer-e-Rekhta 2026 Core Team Recruitment",
-    department: 'General',
-    description: 'Annual recruitment drive for enthusiastic youth and Urdu literary volunteers.',
-    requirements: ['Passion for Urdu literature', 'Minimum 6 months commitment', 'Good communication skills'],
-    openingsCount: 15,
-    deadline: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000),
-    status: 'active',
-    createdByName: 'HR Administrator',
-    applicationsCount: 0,
-    createdAt: new Date(),
-  };
-  setMemoryCampaign(defaultCampaign);
-}
+// Memory campaigns initialize strictly empty in production zero-state
 
 // ---------------------------------------------------------------------------
 // 1. RECRUITMENT CAMPAIGNS
@@ -2065,10 +2048,16 @@ router.get('/overview', protect, authorize('super_admin', 'hr'), async (req, res
     } catch {}
     if (!leaves || leaves.length === 0) leaves = getMemoryLeavesList();
 
-    // Department employee breakdown
-    const departmentDistribution = VALID_DEPARTMENTS.map((dept) => ({
-      name: dept,
-      count: users.filter((u) => u.department === dept).length,
+    // Department employee breakdown (dynamically derived from genuine database departments)
+    let activeDepts = [];
+    try {
+      activeDepts = await Department.find({ status: 'active' }).sort({ name: 1 });
+    } catch {}
+
+    const departmentDistribution = activeDepts.map((dept) => ({
+      name: dept.name,
+      code: dept.code,
+      count: users.filter((u) => u.department === dept.name || u.departmentCode === dept.code).length,
     }));
 
     return res.json({

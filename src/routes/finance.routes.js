@@ -281,270 +281,11 @@ function getUserDept(user) {
   return user.department || null;
 }
 
-// Seed initial memory data if empty
+// Production Zero-State: Memory stores initialize strictly empty without sample or dummy seed records.
 function initializeMemoryStores() {
-  if (memoryBudgets.size === 0) {
-    const seedBudgets = [
-      {
-        _id: 'bdg_seed_lit_2026',
-        id: 'bdg_seed_lit_2026',
-        budgetId: 'BDG-2026-LIT-01',
-        fiscalYear: '2026',
-        title: 'Literature Department Annual Operating Budget',
-        department: 'Literature',
-        category: 'Operating Budget',
-        currency: 'PKR',
-        isArchived: false,
-        allocatedAmount: 150000,
-        spentAmount: 25000,
-        remainingAmount: 125000,
-        status: 'active',
-        allocatedByName: 'Ahmad Maqsood (Finance Lead)',
-        notes: 'Annual literary publications, mushaira events, and workshops',
-        history: [{ action: 'INITIAL_ALLOCATION', amount: 150000, previousAmount: 0, newAmount: 150000, previousSpent: 0, newSpent: 25000, previousStatus: 'none', newStatus: 'active', note: 'Initial budget setup', timestamp: new Date() }],
-        createdAt: new Date('2026-01-01'),
-      },
-      {
-        _id: 'bdg_seed_med_2026',
-        id: 'bdg_seed_med_2026',
-        budgetId: 'BDG-2026-MED-01',
-        fiscalYear: '2026',
-        title: 'Media & Production Annual Budget',
-        department: 'Media',
-        category: 'Operating Budget',
-        currency: 'PKR',
-        isArchived: false,
-        allocatedAmount: 200000,
-        spentAmount: 45000,
-        remainingAmount: 155000,
-        status: 'active',
-        allocatedByName: 'Ahmad Maqsood (Finance Lead)',
-        notes: 'Audio/video recording equipment, digital production, and editing suites',
-        history: [{ action: 'INITIAL_ALLOCATION', amount: 200000, previousAmount: 0, newAmount: 200000, previousSpent: 0, newSpent: 45000, previousStatus: 'none', newStatus: 'active', note: 'Initial budget setup', timestamp: new Date() }],
-        createdAt: new Date('2026-01-01'),
-      },
-      {
-        _id: 'bdg_seed_mkt_2026',
-        id: 'bdg_seed_mkt_2026',
-        budgetId: 'BDG-2026-MKT-01',
-        fiscalYear: '2026',
-        title: 'Marketing & Digital Outreach Budget',
-        department: 'Marketing',
-        category: 'Operating Budget',
-        currency: 'PKR',
-        isArchived: false,
-        allocatedAmount: 100000,
-        spentAmount: 15000,
-        remainingAmount: 85000,
-        status: 'active',
-        allocatedByName: 'Ahmad Maqsood (Finance Lead)',
-        notes: 'Digital campaigns, branding, print flyers, and social promotions',
-        history: [{ action: 'INITIAL_ALLOCATION', amount: 100000, previousAmount: 0, newAmount: 100000, previousSpent: 0, newSpent: 15000, previousStatus: 'none', newStatus: 'active', note: 'Initial budget setup', timestamp: new Date() }],
-        createdAt: new Date('2026-01-01'),
-      },
-      {
-        _id: 'bdg_seed_out_2026',
-        id: 'bdg_seed_out_2026',
-        budgetId: 'BDG-2026-OUT-01',
-        fiscalYear: '2026',
-        title: 'Public Outreach & Welfare Budget',
-        department: 'Outreach',
-        category: 'Operating Budget',
-        currency: 'PKR',
-        isArchived: false,
-        allocatedAmount: 120000,
-        spentAmount: 30000,
-        remainingAmount: 90000,
-        status: 'active',
-        allocatedByName: 'Ahmad Maqsood (Finance Lead)',
-        notes: 'Community outreach drives, partner events, and public engagement',
-        history: [{ action: 'INITIAL_ALLOCATION', amount: 120000, previousAmount: 0, newAmount: 120000, previousSpent: 0, newSpent: 30000, previousStatus: 'none', newStatus: 'active', note: 'Initial budget setup', timestamp: new Date() }],
-        createdAt: new Date('2026-01-01'),
-      },
-      {
-        _id: 'bdg_seed_con_2026',
-        id: 'bdg_seed_con_2026',
-        budgetId: 'BDG-2026-CON-01',
-        fiscalYear: '2026',
-        title: 'Content Creation & Editorial Budget',
-        department: 'Content Creation',
-        category: 'Operating Budget',
-        currency: 'PKR',
-        isArchived: false,
-        allocatedAmount: 80000,
-        spentAmount: 10000,
-        remainingAmount: 70000,
-        status: 'active',
-        allocatedByName: 'Ahmad Maqsood (Finance Lead)',
-        notes: 'Article writing, calligraphy, graphic design resources, and research',
-        history: [{ action: 'INITIAL_ALLOCATION', amount: 80000, previousAmount: 0, newAmount: 80000, previousSpent: 0, newSpent: 10000, previousStatus: 'none', newStatus: 'active', note: 'Initial budget setup', timestamp: new Date() }],
-        createdAt: new Date('2026-01-01'),
-      },
-      {
-        _id: 'bdg_seed_fin_2026',
-        id: 'bdg_seed_fin_2026',
-        budgetId: 'BDG-2026-FIN-01',
-        fiscalYear: '2026',
-        title: 'Finance & Compliance Annual Budget',
-        department: 'Finance',
-        category: 'Operating Budget',
-        currency: 'PKR',
-        isArchived: false,
-        allocatedAmount: 150000,
-        spentAmount: 20000,
-        remainingAmount: 130000,
-        status: 'active',
-        allocatedByName: 'Ahmad Maqsood (Finance Lead)',
-        notes: 'Accounting software, audits, banking compliance, and financial administration',
-        history: [{ action: 'INITIAL_ALLOCATION', amount: 150000, previousAmount: 0, newAmount: 150000, previousSpent: 0, newSpent: 20000, previousStatus: 'none', newStatus: 'active', note: 'Initial budget setup', timestamp: new Date() }],
-        createdAt: new Date('2026-01-01'),
-      },
-      {
-        _id: 'bdg_seed_gen_2026',
-        id: 'bdg_seed_gen_2026',
-        budgetId: 'BDG-2026-GEN-01',
-        fiscalYear: '2026',
-        title: 'General Administrative & Executive Operating Budget',
-        department: 'General',
-        category: 'Operating Budget',
-        currency: 'PKR',
-        isArchived: false,
-        allocatedAmount: 200000,
-        spentAmount: 15000,
-        remainingAmount: 185000,
-        status: 'active',
-        allocatedByName: 'Ahmad Maqsood (Finance Lead)',
-        notes: 'Central administration, presidential delegation, and organization reserves',
-        history: [{ action: 'INITIAL_ALLOCATION', amount: 200000, previousAmount: 0, newAmount: 200000, previousSpent: 0, newSpent: 15000, previousStatus: 'none', newStatus: 'active', note: 'Initial budget setup', timestamp: new Date() }],
-        createdAt: new Date('2026-01-01'),
-      },
-      {
-        _id: 'bdg_seed_hr_2026',
-        id: 'bdg_seed_hr_2026',
-        budgetId: 'BDG-2026-HR-01',
-        fiscalYear: '2026',
-        title: 'Human Resources & Talent Development Budget',
-        department: 'HR',
-        category: 'Operating Budget',
-        currency: 'PKR',
-        isArchived: false,
-        allocatedAmount: 100000,
-        spentAmount: 12000,
-        remainingAmount: 88000,
-        status: 'active',
-        allocatedByName: 'Ahmad Maqsood (Finance Lead)',
-        notes: 'Volunteer onboarding, training seminars, identity badges, and team development',
-        history: [{ action: 'INITIAL_ALLOCATION', amount: 100000, previousAmount: 0, newAmount: 100000, previousSpent: 0, newSpent: 12000, previousStatus: 'none', newStatus: 'active', note: 'Initial budget setup', timestamp: new Date() }],
-        createdAt: new Date('2026-01-01'),
-      },
-    ];
-    seedBudgets.forEach(setMemoryBudget);
-  }
-
-  if (memoryDonations.size === 0) {
-    const seedDonations = [
-      {
-        _id: 'don_seed_01',
-        id: 'don_seed_01',
-        receiptNo: 'REC-20260115-0001',
-        referenceNumber: 'TRX-BANK-882910',
-        donorName: 'Syed Tariq Mahmood',
-        donorEmail: 'tariq.mahmood@example.com',
-        donorPhone: '+92 300 1234567',
-        amount: 50000,
-        currency: 'PKR',
-        isArchived: false,
-        paymentMethod: 'Bank Transfer',
-        category: 'Donation',
-        cause: 'Urdu Literary Archives Preservation',
-        verificationStatus: 'Verified',
-        verifiedByName: 'Ahmad Maqsood (Finance Lead)',
-        verifiedAt: new Date('2026-01-16'),
-        verificationNotes: 'Verified via Meezan Bank statement ledger.',
-        history: [{ status: 'Verified', previousStatus: 'Pending', changedByName: 'Ahmad Maqsood', notes: 'Initial seed entry', timestamp: new Date('2026-01-16') }],
-        createdAt: new Date('2026-01-15'),
-      },
-      {
-        _id: 'don_seed_02',
-        id: 'don_seed_02',
-        receiptNo: 'REC-20260201-0002',
-        referenceNumber: 'EP-9928374',
-        donorName: 'Fatima Zahra',
-        donorEmail: 'fatima.zahra@example.com',
-        donorPhone: '+92 321 7654321',
-        amount: 25000,
-        currency: 'PKR',
-        isArchived: false,
-        paymentMethod: 'EasyPaisa',
-        category: 'Donation',
-        cause: 'General Welfare Fund',
-        verificationStatus: 'Pending',
-        history: [{ status: 'Pending', previousStatus: 'none', notes: 'Pledge submitted', timestamp: new Date('2026-02-01') }],
-        createdAt: new Date('2026-02-01'),
-      },
-    ];
-    seedDonations.forEach(setMemoryDonation);
-  }
-
-  if (memoryExpenses.size === 0) {
-    const seedExpenses = [
-      {
-        _id: 'exp_seed_01',
-        id: 'exp_seed_01',
-        expenseId: 'EXP-2026-LIT-001',
-        title: 'Annual Poetry Anthology Printing (Phase 1)',
-        description: 'Printed 500 copies of youth Urdu poetry compendium for literary festival.',
-        amount: 25000,
-        currency: 'PKR',
-        isArchived: false,
-        category: 'Printing & Publications',
-        department: 'Literature',
-        receiptUrl: 'https://storage.rekhta.org/receipts/print_anthology_inv_982.pdf',
-        status: 'approved',
-        submittedBy: 'usr_lit_head_01',
-        submittedByName: 'Noor-ul-Huda',
-        submittedByEmail: 'lit.head@rekhta.org',
-        submittedByRole: 'dept_literature',
-        date: new Date('2026-01-20'),
-        reviewedByName: 'Ahmad Maqsood (Finance Lead)',
-        reviewedAt: new Date('2026-01-22'),
-        reviewNotes: 'Vendor invoice verified and approved within departmental allocation.',
-        history: [
-          { status: 'pending', previousStatus: 'none', notes: 'Submitted for finance review', timestamp: new Date('2026-01-20') },
-          { status: 'approved', previousStatus: 'pending', changedByName: 'Ahmad Maqsood', notes: 'Approved against LIT 2026 Budget', timestamp: new Date('2026-01-22') },
-        ],
-        createdAt: new Date('2026-01-20'),
-      },
-      {
-        _id: 'exp_seed_02',
-        id: 'exp_seed_02',
-        expenseId: 'EXP-2026-MED-002',
-        title: 'Studio Microphone Stand and Acoustic Panels',
-        description: 'Studio equipment purchase for Urdu podcast recording session.',
-        amount: 45000,
-        currency: 'PKR',
-        isArchived: false,
-        category: 'Equipment & Assets',
-        department: 'Media',
-        receiptUrl: 'https://storage.rekhta.org/receipts/audio_gear_rec_114.pdf',
-        status: 'approved',
-        submittedBy: 'usr_med_head_01',
-        submittedByName: 'Aisha Tariq',
-        submittedByEmail: 'media.head@rekhta.org',
-        submittedByRole: 'dept_media',
-        date: new Date('2026-02-05'),
-        reviewedByName: 'Ahmad Maqsood (Finance Lead)',
-        reviewedAt: new Date('2026-02-06'),
-        reviewNotes: 'Essential media gear verified against studio equipment request.',
-        history: [
-          { status: 'pending', previousStatus: 'none', notes: 'Equipment purchase submitted', timestamp: new Date('2026-02-05') },
-          { status: 'approved', previousStatus: 'pending', changedByName: 'Ahmad Maqsood', notes: 'Approved', timestamp: new Date('2026-02-06') },
-        ],
-        createdAt: new Date('2026-02-05'),
-      },
-    ];
-    seedExpenses.forEach(setMemoryExpense);
-  }
+  memoryBudgets.clear();
+  memoryDonations.clear();
+  memoryExpenses.clear();
 }
 
 initializeMemoryStores();
@@ -653,16 +394,22 @@ router.get(['/overview', '/finance/overview'], protect, authorize('super_admin',
     const overallUtilizationRate =
       totalAllocatedBudget > 0 ? Number(((totalSpentBudget / totalAllocatedBudget) * 100).toFixed(1)) : 0;
 
-    // Department budget breakdown
-    const departmentBreakdown = VALID_DEPARTMENTS.slice(0, 5).map((dept) => {
-      const deptBudgets = budgets.filter((b) => b.department === dept && !b.isArchived);
+    // Department budget breakdown (dynamically derived from genuine database departments)
+    let activeDepts = [];
+    try {
+      activeDepts = await Department.find({ status: 'active' }).sort({ name: 1 });
+    } catch {}
+
+    const departmentBreakdown = activeDepts.map((dept) => {
+      const deptName = dept.name;
+      const deptBudgets = budgets.filter((b) => b.department?.toLowerCase() === deptName.toLowerCase() && !b.isArchived);
       const allocated = deptBudgets.reduce((s, b) => s + (Number(b.allocatedAmount) || 0), 0);
       const deptExpenses = expenses.filter(
-        (e) => e.department === dept && ['approved', 'paid', 'reimbursed'].includes((e.status || '').toLowerCase())
+        (e) => e.department?.toLowerCase() === deptName.toLowerCase() && ['approved', 'paid', 'reimbursed'].includes((e.status || '').toLowerCase())
       );
       const spent = deptExpenses.reduce((s, e) => s + (Number(e.amount) || 0), 0);
       return {
-        department: dept,
+        department: deptName,
         allocated,
         spent,
         remaining: allocated - spent,
