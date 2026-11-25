@@ -24,17 +24,31 @@ const REFRESH_SECRET = validatedSecrets.refreshSecret;
 
 // Helper to generate access & refresh tokens
 function generateTokens(user) {
+  const primaryMembership = Array.isArray(user.memberships) && user.memberships.find((m) => m.isPrimary);
+  const activeDept = user.activeDepartment || user.department || primaryMembership?.department || DEPT_ROLE_MAP[user.role]?.name || null;
+  const activeCode = user.activeDepartmentCode || user.departmentCode || primaryMembership?.departmentCode || DEPT_ROLE_MAP[user.role]?.code || null;
+  const activeRole = user.activeRole || user.role;
+  const activeDesig = normalizeDesignation(user.activeDesignation || user.designation || primaryMembership?.designation) || null;
+
   const payload = {
     id: user._id?.toString() || user.id?.toString(),
     email: user.email,
     name: user.name,
-    role: user.role,
-    department: user.department || DEPT_ROLE_MAP[user.role]?.name || null,
-    departmentCode: user.departmentCode || DEPT_ROLE_MAP[user.role]?.code || null,
+    role: activeRole,
+    department: activeDept,
+    departmentCode: activeCode,
     status: user.status,
     isPrivilegedHR: Boolean(user.isPrivilegedHR),
     tokenVersion: user.tokenVersion || 0,
-    designation: normalizeDesignation(user.designation) || null,
+    designation: activeDesig,
+    memberships: user.memberships || [],
+    emailAliases: user.emailAliases || [],
+    city: user.city || null,
+    region: user.region || null,
+    activeDepartment: activeDept,
+    activeDepartmentCode: activeCode,
+    activeRole: activeRole,
+    activeDesignation: activeDesig,
   };
 
   const accessToken = jwt.sign(payload, JWT_SECRET, { expiresIn: '1h' });
@@ -111,7 +125,9 @@ router.post('/login', loginRateLimiter, async (req, res) => {
     // 1. Search database or in-memory store
     let user = null;
     try {
-      user = await User.findOne({ email: normalizedEmail });
+      user = await User.findOne({
+        $or: [{ email: normalizedEmail }, { emailAliases: normalizedEmail }],
+      });
     } catch {
       // In offline/controlled config mode
     }
@@ -195,10 +211,18 @@ router.post('/login', loginRateLimiter, async (req, res) => {
         id: payload.id,
         name: user.name,
         email: user.email,
-        role: user.role,
+        role: payload.role || user.role,
         department: payload.department,
         departmentCode: payload.departmentCode,
-        designation: normalizeDesignation(user.designation) || null,
+        designation: payload.designation,
+        memberships: user.memberships || [],
+        emailAliases: user.emailAliases || [],
+        city: user.city || null,
+        region: user.region || null,
+        activeDepartment: payload.activeDepartment || payload.department,
+        activeDepartmentCode: payload.activeDepartmentCode || payload.departmentCode,
+        activeRole: payload.activeRole || user.role,
+        activeDesignation: payload.activeDesignation || payload.designation,
         isPrivilegedHR: Boolean(user.isPrivilegedHR),
         status: user.status,
       },
@@ -339,6 +363,96 @@ router.get('/me', protect, (req, res) => {
     success: true,
     user: req.user,
   });
+});
+
+/**
+ * @route   POST /api/auth/switch-department
+ * @desc    Validate and switch user's active department context
+ * @access  Protected
+ */
+router.post('/switch-department', protect, async (req, res) => {
+  try {
+    const { department } = req.body;
+    if (!department) {
+      return res.status(400).json({ success: false, error: 'Department name or code is required.' });
+    }
+
+    const requested = department.trim().toLowerCase();
+
+    // 1. Super Admin has unrestricted context switching
+    if (req.user.role === 'super_admin') {
+      req.user.activeDepartment = department.trim();
+      req.user.activeDepartmentCode = department.trim().substring(0, 3).toUpperCase();
+      req.user.activeRole = 'super_admin';
+      req.user.activeDesignation = null;
+
+      const { accessToken, refreshToken, payload } = generateTokens(req.user);
+      setAuthCookies(res, accessToken, refreshToken);
+
+      return res.json({
+        success: true,
+        activeDepartment: req.user.activeDepartment,
+        activeDepartmentCode: req.user.activeDepartmentCode,
+        activeRole: 'super_admin',
+        activeDesignation: null,
+        user: payload,
+      });
+    }
+
+    // 2. Check multi-department memberships
+    let matchedMembership = null;
+    if (Array.isArray(req.user.memberships) && req.user.memberships.length > 0) {
+      matchedMembership = req.user.memberships.find(
+        (m) =>
+          m.department?.toLowerCase() === requested ||
+          m.departmentCode?.toLowerCase() === requested
+      );
+    }
+
+    // 3. Fallback: check primary department and code
+    if (!matchedMembership) {
+      const primaryName = (req.user.department || DEPT_ROLE_MAP[req.user.role]?.name || '').toLowerCase();
+      const primaryCode = (req.user.departmentCode || DEPT_ROLE_MAP[req.user.role]?.code || '').toLowerCase();
+      if (primaryName === requested || primaryCode === requested) {
+        matchedMembership = {
+          department: req.user.department || DEPT_ROLE_MAP[req.user.role]?.name,
+          departmentCode: req.user.departmentCode || DEPT_ROLE_MAP[req.user.role]?.code,
+          role: req.user.role,
+          designation: req.user.designation,
+          region: req.user.region || null,
+        };
+      }
+    }
+
+    // 4. Server-Side Security Gate: Reject if not authorized
+    if (!matchedMembership) {
+      return res.status(403).json({
+        success: false,
+        error: `Unauthorized department context: You do not hold an authorized membership in '${department}'.`,
+      });
+    }
+
+    req.user.activeDepartment = matchedMembership.department;
+    req.user.activeDepartmentCode = matchedMembership.departmentCode;
+    req.user.activeRole = matchedMembership.role;
+    req.user.activeDesignation = matchedMembership.designation;
+    req.user.activeRegion = matchedMembership.region || null;
+
+    const { accessToken, refreshToken, payload } = generateTokens(req.user);
+    setAuthCookies(res, accessToken, refreshToken);
+
+    return res.json({
+      success: true,
+      activeDepartment: matchedMembership.department,
+      activeDepartmentCode: matchedMembership.departmentCode,
+      activeRole: matchedMembership.role,
+      activeDesignation: matchedMembership.designation,
+      activeRegion: matchedMembership.region || null,
+      user: payload,
+    });
+  } catch (err) {
+    return res.status(500).json({ success: false, error: 'Failed to switch department context.' });
+  }
 });
 
 /**
@@ -581,6 +695,82 @@ router.post('/reset-password', async (req, res) => {
 });
 
 /**
+ * @route   POST /api/auth/verify-activation-token
+ * @desc    Verify activation token validity for frontend activation screen
+ * @access  Public
+ */
+router.post('/verify-activation-token', async (req, res) => {
+  try {
+    const { token } = req.body;
+    if (!token) {
+      return res.status(400).json({ success: false, valid: false, error: 'Activation token is required.' });
+    }
+
+    const hashedToken = crypto.createHash('sha256').update(token.trim()).digest('hex');
+
+    let user = null;
+    try {
+      user = await User.findOne({ activationToken: hashedToken });
+    } catch {}
+
+    if (!user) {
+      for (const u of getMemoryUsersList()) {
+        if (u.activationToken === hashedToken) {
+          user = u;
+          break;
+        }
+      }
+    }
+
+    if (!user) {
+      return res.status(400).json({
+        success: false,
+        valid: false,
+        error: 'Invalid or unrecognized activation token. Please request a new link from the Super Admin.',
+      });
+    }
+
+    if (user.status === 'suspended') {
+      return res.status(403).json({
+        success: false,
+        valid: false,
+        error: 'This account has been suspended. Account activation is strictly prohibited.',
+      });
+    }
+
+    if (user.status === 'active') {
+      return res.status(400).json({
+        success: false,
+        valid: false,
+        error: 'This account has already been activated. Please proceed to the portal login page.',
+      });
+    }
+
+    if (user.activationExpires && new Date(user.activationExpires) < new Date()) {
+      return res.status(400).json({
+        success: false,
+        valid: false,
+        error: 'This activation link has expired. Please contact the Super Admin for a fresh link.',
+      });
+    }
+
+    return res.json({
+      success: true,
+      valid: true,
+      name: user.name,
+      email: user.email,
+      department: user.department,
+      departmentCode: user.departmentCode,
+      role: user.role,
+      designation: user.designation,
+      memberships: user.memberships || [],
+    });
+  } catch (err) {
+    return res.status(500).json({ success: false, valid: false, error: 'Failed to verify activation token.' });
+  }
+});
+
+/**
  * @route   POST /api/auth/activate
  * @desc    Activate a new account created by HR / Admin
  * @access  Public
@@ -604,19 +794,18 @@ router.post('/activate', async (req, res) => {
       return res.status(400).json({ success: false, error: 'Password must be at least 6 characters long.' });
     }
 
-    const hashedToken = crypto.createHash('sha256').update(token).digest('hex');
+    const hashedToken = crypto.createHash('sha256').update(token.trim()).digest('hex');
 
     let user = null;
     try {
       user = await User.findOne({
         activationToken: hashedToken,
-        activationExpires: { $gt: Date.now() },
       });
     } catch {}
 
     if (!user) {
       for (const u of getMemoryUsersList()) {
-        if (u.activationToken === hashedToken && u.activationExpires > Date.now()) {
+        if (u.activationToken === hashedToken) {
           user = u;
           break;
         }
@@ -624,6 +813,50 @@ router.post('/activate', async (req, res) => {
     }
 
     if (!user) {
+      await AuditLog.create({
+        actorId: null,
+        actorName: 'Anonymous Candidate',
+        actorRole: 'anonymous',
+        action: 'ACTIVATION_FAILED',
+        module: 'AUTH',
+        targetId: null,
+        targetModel: 'User',
+        description: 'Account activation attempt failed: Invalid token.',
+      }).catch(() => null);
+
+      return res.status(400).json({ success: false, error: 'Invalid or expired activation token.' });
+    }
+
+    if (user.status === 'suspended') {
+      await AuditLog.create({
+        actorId: user._id || user.id,
+        actorName: user.name,
+        actorRole: user.role,
+        action: 'ACTIVATION_FAILED',
+        module: 'AUTH',
+        targetId: (user._id || user.id)?.toString(),
+        targetModel: 'User',
+        description: `Account activation attempt blocked for suspended user: ${user.name} (${user.email}).`,
+      }).catch(() => null);
+
+      return res.status(403).json({
+        success: false,
+        error: 'This account has been suspended. Account activation is strictly prohibited.',
+      });
+    }
+
+    if (user.activationExpires && new Date(user.activationExpires) < new Date()) {
+      await AuditLog.create({
+        actorId: user._id || user.id,
+        actorName: user.name,
+        actorRole: user.role,
+        action: 'ACTIVATION_FAILED',
+        module: 'AUTH',
+        targetId: (user._id || user.id)?.toString(),
+        targetModel: 'User',
+        description: `Account activation attempt failed: Expired token for ${user.name} (${user.email}).`,
+      }).catch(() => null);
+
       return res.status(400).json({ success: false, error: 'Invalid or expired activation token.' });
     }
 
@@ -631,6 +864,8 @@ router.post('/activate', async (req, res) => {
     user.status = 'active';
     user.activationToken = undefined;
     user.activationExpires = undefined;
+    user.activationRevokedAt = undefined;
+    user.tokenVersion = (user.tokenVersion || 0) + 1;
 
     try {
       await user.save();

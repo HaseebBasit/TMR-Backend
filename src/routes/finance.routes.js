@@ -244,7 +244,9 @@ const DEPT_ROLE_MAP = {
   dept_media: { name: 'Media', code: 'MED' },
   dept_marketing: { name: 'Marketing', code: 'MKT' },
   dept_outreach: { name: 'Outreach', code: 'OUT' },
+  dept_oam: { name: 'Outreach and Marketing', code: 'OAM' },
   dept_content: { name: 'Content Creation', code: 'CON' },
+  dept_welfare: { name: 'Welfare', code: 'WEL' },
   hr: { name: 'HR', code: 'HR' },
   finance: { name: 'Finance', code: 'FIN' },
 };
@@ -254,7 +256,9 @@ const VALID_DEPARTMENTS = [
   'Media',
   'Marketing',
   'Outreach',
+  'Outreach and Marketing',
   'Content Creation',
+  'Welfare',
   'HR',
   'Finance',
   'General',
@@ -275,8 +279,10 @@ const VALID_EXPENSE_CATEGORIES = [
 
 // Helper to resolve user department
 function getUserDept(user) {
-  if (user.role && DEPT_ROLE_MAP[user.role]) {
-    return DEPT_ROLE_MAP[user.role].name;
+  if (user.activeDepartment) return user.activeDepartment;
+  const effectiveRole = user.activeRole || user.role;
+  if (effectiveRole && DEPT_ROLE_MAP[effectiveRole]) {
+    return DEPT_ROLE_MAP[effectiveRole].name;
   }
   return user.department || null;
 }
@@ -932,12 +938,14 @@ router.get(['/expenses', '/finance/expenses'], protect, authorize('super_admin',
 router.get(
   ['/expenses/department', '/finance/expenses/department'],
   protect,
-  authorize('super_admin', 'finance', 'dept_literature', 'dept_media', 'dept_marketing', 'dept_outreach', 'dept_content'),
+  authorize('super_admin', 'finance', 'dept_literature', 'dept_media', 'dept_marketing', 'dept_outreach', 'dept_oam', 'dept_content', 'dept_welfare'),
   async (req, res) => {
     try {
-      if (req.user.role.startsWith('dept_')) {
-        const desig = normalizeDesignation(req.user.designation) || 'head';
-        if (!['head', 'director'].includes(desig)) {
+      const effectiveRole = req.user.activeRole || req.user.role;
+      const effectiveDesig = req.user.activeDesignation || req.user.designation;
+      if (effectiveRole.startsWith('dept_')) {
+        const desig = normalizeDesignation(effectiveDesig) || 'head';
+        if (!['head', 'director', 'head_of_punjab', 'head_of_sindh'].includes(desig)) {
           return res.status(403).json({
             success: false,
             error: 'Forbidden: Assistant Directors and Members do not hold departmental financial access privileges.',
@@ -946,7 +954,7 @@ router.get(
       }
 
       let targetDept = null;
-      if (req.user.role.startsWith('dept_')) {
+      if (effectiveRole.startsWith('dept_')) {
         targetDept = getUserDept(req.user);
       } else {
         targetDept = req.query.department || null;
@@ -1755,12 +1763,14 @@ router.patch(['/expenses/:id/disburse', '/finance/expenses/:id/disburse'], prote
 router.get(
   ['/budgets', '/finance/budgets'],
   protect,
-  authorize('super_admin', 'finance', 'dept_literature', 'dept_media', 'dept_marketing', 'dept_outreach', 'dept_content'),
+  authorize('super_admin', 'finance', 'dept_literature', 'dept_media', 'dept_marketing', 'dept_outreach', 'dept_oam', 'dept_content', 'dept_welfare'),
   async (req, res) => {
     try {
-      if (req.user.role.startsWith('dept_')) {
-        const desig = normalizeDesignation(req.user.designation) || 'head';
-        if (!['head', 'director'].includes(desig)) {
+      const effectiveRole = req.user.activeRole || req.user.role;
+      const effectiveDesig = req.user.activeDesignation || req.user.designation;
+      if (effectiveRole.startsWith('dept_')) {
+        const desig = normalizeDesignation(effectiveDesig) || 'head';
+        if (!['head', 'director', 'head_of_punjab', 'head_of_sindh'].includes(desig)) {
           return res.status(403).json({
             success: false,
             error: 'Forbidden: Assistant Directors and Members do not hold departmental budget access privileges.',
@@ -1768,7 +1778,7 @@ router.get(
         }
       }
 
-      const isDeptHead = req.user.role.startsWith('dept_');
+      const isDeptHead = effectiveRole.startsWith('dept_');
       const deptFilter = isDeptHead ? getUserDept(req.user) : req.query.department;
 
       let budgets = [];

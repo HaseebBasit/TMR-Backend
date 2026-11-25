@@ -252,40 +252,42 @@ async function runTests() {
 
   try {
     // -------------------------------------------------------------------------
-    // GROUP 1: NINE-ROLE ARCHITECTURE ENFORCEMENT & MODEL INTEGRITY
+    // GROUP 1: ELEVEN-ROLE ARCHITECTURE ENFORCEMENT & MODEL INTEGRITY
     // -------------------------------------------------------------------------
-    console.log('>>> [GROUP 1]: Nine-Role Architecture & Model Integrity');
+    console.log('>>> [GROUP 1]: Eleven-Role Architecture & Model Integrity');
 
-    const expected9Roles = [
+    const expectedApprovedRoles = [
       'super_admin',
       'dept_literature',
       'dept_media',
       'dept_marketing',
       'dept_outreach',
+      'dept_oam',
       'dept_content',
+      'dept_welfare',
       'hr',
       'finance',
       'member',
     ];
 
-    // Test 1.1: ALLOWED_ROLES contains exactly the 9 approved roles
+    // Test 1.1: ALLOWED_ROLES contains exactly the 11 approved roles
     const rolesMatch =
-      ALLOWED_ROLES.length === 9 &&
-      expected9Roles.every((r) => ALLOWED_ROLES.includes(r));
-    assert(rolesMatch, 'Test 1.1: ALLOWED_ROLES strictly defines the 9 approved roles');
+      ALLOWED_ROLES.length === 11 &&
+      expectedApprovedRoles.every((r) => ALLOWED_ROLES.includes(r));
+    assert(rolesMatch, 'Test 1.1: ALLOWED_ROLES strictly defines the 11 approved roles');
 
-    // Test 1.2: User Mongoose Schema enum strictly contains only the 9 approved roles
+    // Test 1.2: User Mongoose Schema enum strictly contains only the 11 approved roles
     const userRoleEnum = User.schema.path('role').enumValues;
     const enumStrict =
-      userRoleEnum.length === 9 &&
-      expected9Roles.every((r) => userRoleEnum.includes(r)) &&
+      userRoleEnum.length === 11 &&
+      expectedApprovedRoles.every((r) => userRoleEnum.includes(r)) &&
       !userRoleEnum.includes('department_head') &&
       !userRoleEnum.includes('finance_lead') &&
       !userRoleEnum.includes('hr_lead') &&
       !userRoleEnum.includes('volunteer');
     assert(
       enumStrict,
-      'Test 1.2: User model schema strictly enforces 9 roles (no generic department_head or volunteer in enum)'
+      'Test 1.2: User model schema strictly enforces 11 roles (no generic department_head or volunteer in enum)'
     );
 
     // Test 1.3: Super Admin cannot create a user with legacy/generic role ('department_head')

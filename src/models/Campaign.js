@@ -9,7 +9,18 @@ const CampaignSchema = new mongoose.Schema(
     },
     department: {
       type: String,
-      enum: ['Literature', 'Media', 'Marketing', 'Outreach', 'Content Creation', 'HR', 'Finance', 'General'],
+      enum: [
+        'Literature',
+        'Media',
+        'Marketing',
+        'Outreach',
+        'Outreach and Marketing',
+        'Content Creation',
+        'Welfare',
+        'HR',
+        'Finance',
+        'General',
+      ],
       default: 'General',
     },
     description: {

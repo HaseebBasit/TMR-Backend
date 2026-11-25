@@ -1,5 +1,16 @@
 const mongoose = require('mongoose');
 
+const RegionalLeadSchema = new mongoose.Schema(
+  {
+    region: { type: String, enum: ['Punjab', 'Sindh', 'National'], required: true },
+    leadId: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+    leadName: { type: String, trim: true },
+    leadEmail: { type: String, trim: true },
+    designation: { type: String, trim: true },
+  },
+  { _id: false }
+);
+
 const DepartmentSchema = new mongoose.Schema(
   {
     name: { type: String, required: true, trim: true, unique: true },
@@ -8,6 +19,7 @@ const DepartmentSchema = new mongoose.Schema(
     leadId: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
     leadName: { type: String, trim: true },
     leadEmail: { type: String, trim: true },
+    regionalLeads: [RegionalLeadSchema],
     memberCount: { type: Number, default: 0 },
     activeTasksCount: { type: Number, default: 0 },
     status: {

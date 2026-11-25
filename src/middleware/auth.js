@@ -12,6 +12,7 @@ const {
   validateRoleDesignation,
   hasCapability,
   isDepartmentMatch,
+  getWelfareRegionalScope,
 } = require('../constants/roles');
 
 // Validate production secrets: never allow production to run on hardcoded defaults
@@ -43,7 +44,16 @@ const setMemoryUser = (user) => {
 
 const getMemoryUser = (identifier) => {
   if (!identifier) return null;
-  return memoryUsers.get(identifier.toString()) || memoryUsers.get(identifier.toString().toLowerCase().trim()) || null;
+  const idStr = identifier.toString().toLowerCase().trim();
+  const direct = memoryUsers.get(identifier.toString()) || memoryUsers.get(idStr);
+  if (direct) return direct;
+  for (const u of memoryUsers.values()) {
+    if (u.email?.toLowerCase().trim() === idStr) return u;
+    if (Array.isArray(u.emailAliases) && u.emailAliases.some((a) => a.toLowerCase().trim() === idStr)) {
+      return u;
+    }
+  }
+  return null;
 };
 
 const getMemoryUsersList = () => {
@@ -56,7 +66,9 @@ const DEPT_ROLE_MAP = {
   dept_media: { name: 'Media', code: 'MED' },
   dept_marketing: { name: 'Marketing', code: 'MKT' },
   dept_outreach: { name: 'Outreach', code: 'OUT' },
+  dept_oam: { name: 'Outreach and Marketing', code: 'OAM' },
   dept_content: { name: 'Content Creation', code: 'CON' },
+  dept_welfare: { name: 'Welfare', code: 'WEL' },
 };
 
 /**
@@ -100,6 +112,10 @@ const protect = async (req, res, next) => {
         id: decoded.id,
         name: decoded.name || 'Portal User',
         email: decoded.email,
+        emailAliases: decoded.emailAliases || [],
+        city: decoded.city || null,
+        region: decoded.region || null,
+        memberships: decoded.memberships || [],
         role: decoded.role,
         department: decoded.department,
         departmentCode: decoded.departmentCode,
@@ -131,6 +147,70 @@ const protect = async (req, res, next) => {
       }
     }
 
+    // Department Context Resolution & Server-Side Membership Verification
+    const contextHeader = req.headers['x-department-context'] || req.headers['x-department'];
+    if (contextHeader && typeof contextHeader === 'string' && contextHeader.trim()) {
+      const requestedCtx = contextHeader.trim().toLowerCase();
+      if (user.role === 'super_admin') {
+        user.activeDepartment = contextHeader.trim();
+        user.activeDepartmentCode = contextHeader.trim().substring(0, 3).toUpperCase();
+        user.activeRole = 'super_admin';
+        user.activeDesignation = null;
+      } else {
+        let matched = null;
+        if (Array.isArray(user.memberships) && user.memberships.length > 0) {
+          matched = user.memberships.find(
+            (m) =>
+              m.department?.toLowerCase() === requestedCtx ||
+              m.departmentCode?.toLowerCase() === requestedCtx
+          );
+        }
+        if (!matched) {
+          const primaryName = (user.department || DEPT_ROLE_MAP[user.role]?.name || '').toLowerCase();
+          const primaryCode = (user.departmentCode || DEPT_ROLE_MAP[user.role]?.code || '').toLowerCase();
+          if (primaryName === requestedCtx || primaryCode === requestedCtx) {
+            matched = {
+              department: user.department || DEPT_ROLE_MAP[user.role]?.name,
+              departmentCode: user.departmentCode || DEPT_ROLE_MAP[user.role]?.code,
+              role: user.role,
+              designation: user.designation,
+              region: user.region || null,
+            };
+          }
+        }
+
+        // Strict Server-Side Gate: Never trust client-selected context without membership
+        if (!matched) {
+          return res.status(403).json({
+            success: false,
+            error: `Unauthorized department context: You do not hold an authorized membership in '${contextHeader}'.`,
+          });
+        }
+
+        user.activeMembership = matched;
+        user.activeDepartment = matched.department;
+        user.activeDepartmentCode = matched.departmentCode;
+        user.activeRole = matched.role;
+        user.activeDesignation = matched.designation;
+        user.activeRegion = matched.region || null;
+      }
+    } else {
+      // Default active department to primary membership or base department
+      const primaryMembership = Array.isArray(user.memberships) && user.memberships.find((m) => m.isPrimary);
+      user.activeMembership = primaryMembership || {
+        department: user.department || DEPT_ROLE_MAP[user.role]?.name || null,
+        departmentCode: user.departmentCode || DEPT_ROLE_MAP[user.role]?.code || null,
+        role: user.role,
+        designation: user.designation || null,
+        region: user.region || null,
+      };
+      user.activeDepartment = user.department || primaryMembership?.department || DEPT_ROLE_MAP[user.role]?.name || null;
+      user.activeDepartmentCode = user.departmentCode || primaryMembership?.departmentCode || DEPT_ROLE_MAP[user.role]?.code || null;
+      user.activeRole = primaryMembership?.role || user.role;
+      user.activeDesignation = user.designation || primaryMembership?.designation || null;
+      user.activeRegion = user.region || primaryMembership?.region || null;
+    }
+
     req.user = user;
     next();
   } catch (err) {
@@ -150,6 +230,7 @@ const protect = async (req, res, next) => {
 
 /**
  * Authorize middleware: Checks if authenticated user has one of the allowed roles
+ * Evaluates the active verified membership role (req.user.activeRole || req.user.role).
  */
 const authorize = (...roles) => {
   return (req, res, next) => {
@@ -158,14 +239,16 @@ const authorize = (...roles) => {
     }
 
     // Super Admin has global bypass
-    if (req.user.role === 'super_admin') {
+    if (req.user.role === 'super_admin' || req.user.activeRole === 'super_admin') {
       return next();
     }
 
-    if (!roles.includes(req.user.role)) {
+    const effectiveRole = req.user.activeRole || req.user.role;
+
+    if (!roles.includes(effectiveRole)) {
       return res.status(403).json({
         success: false,
-        error: `Access denied. Role '${req.user.role}' is not authorized for this resource.`,
+        error: `Access denied. Role '${effectiveRole}' is not authorized for this resource.`,
       });
     }
 
@@ -183,17 +266,19 @@ const requireDepartmentScope = (paramName = 'department') => {
     }
 
     // Super Admin has organization-wide access
-    if (req.user.role === 'super_admin') {
+    if (req.user.role === 'super_admin' || req.user.activeRole === 'super_admin') {
       return next();
     }
 
-    // If user is a Department Head
-    if (req.user.role && req.user.role.startsWith('dept_')) {
-      const assignedDept = DEPT_ROLE_MAP[req.user.role];
+    const effectiveRole = req.user.activeRole || req.user.role;
+
+    // Only department heads/directors hold department scope authority
+    if (effectiveRole && effectiveRole.startsWith('dept_')) {
       const targetDept =
         req.params[paramName] ||
         req.query[paramName] ||
         req.body[paramName] ||
+        req.headers['x-department-context'] ||
         req.headers['x-department'];
 
       if (!targetDept) {
@@ -201,65 +286,156 @@ const requireDepartmentScope = (paramName = 'department') => {
       }
 
       const normalizedTarget = targetDept.toLowerCase().trim();
+
+      // 1. Check active/assigned department
+      const assignedDept = DEPT_ROLE_MAP[effectiveRole];
       const matchByName = assignedDept?.name.toLowerCase() === normalizedTarget;
       const matchByCode = assignedDept?.code.toLowerCase() === normalizedTarget;
 
-      if (!matchByName && !matchByCode) {
-        return res.status(403).json({
-          success: false,
-          error: `Department Isolation Violation: You are authorized for '${assignedDept?.name}' only. Access to '${targetDept}' is forbidden.`,
-        });
+      if (matchByName || matchByCode) {
+        return next();
       }
 
-      return next();
+      // 2. Check multi-department memberships
+      if (Array.isArray(req.user.memberships) && req.user.memberships.length > 0) {
+        const hasAuthorizedMembership = req.user.memberships.some((m) => {
+          const nameMatch = m.department?.toLowerCase() === normalizedTarget;
+          const codeMatch = m.departmentCode?.toLowerCase() === normalizedTarget;
+          if (!nameMatch && !codeMatch) return false;
+          // Verify member has operational/leadership scope for this department
+          const desig = normalizeDesignation(m.designation);
+          const isLead =
+            m.role?.startsWith('dept_') ||
+            ['head', 'director', 'director_graphics', 'assistant_director', 'head_of_punjab', 'head_of_sindh', 'coordination_incharge'].includes(desig);
+          return isLead;
+        });
+
+        if (hasAuthorizedMembership) {
+          return next();
+        }
+      }
+
+      return res.status(403).json({
+        success: false,
+        error: `Department Isolation Violation: You are authorized for '${assignedDept?.name || req.user.department}' only. Access to '${targetDept}' is forbidden.`,
+      });
     }
 
     // Role is neither super_admin nor an authorized department head
     return res.status(403).json({
       success: false,
-      error: `Access denied: Role '${req.user.role}' is not authorized for department workspace resources.`,
+      error: `Access denied: Role '${effectiveRole}' is not authorized for department workspace resources.`,
     });
   };
 };
 
 /**
  * Member Ownership Gate: Members cannot access other members' records
+ * Department Heads can only inspect members belonging to their active department and region.
  */
 const requireOwnershipOrPrivilege = (userIdField = 'userId') => {
-  return (req, res, next) => {
+  return async (req, res, next) => {
     if (!req.user) {
       return res.status(401).json({ success: false, error: 'Unauthorized.' });
     }
 
-    // Super Admin & HR have privileged oversight
-    if (['super_admin', 'hr'].includes(req.user.role)) {
+    const targetUserId =
+      req.params[userIdField] ||
+      req.params.id ||
+      req.query[userIdField] ||
+      req.body[userIdField];
+
+    const currentUserId = req.user._id?.toString() || req.user.id?.toString();
+
+    // 1. Self-access is always permitted
+    if (targetUserId && targetUserId.toString() === currentUserId) {
       return next();
     }
 
-    // Department heads can access their own department's members
-    if (req.user.role.startsWith('dept_')) {
+    // 2. Super Admin & Privileged HR have global oversight
+    if (req.user.role === 'super_admin' || req.user.isPrivilegedHR) {
       return next();
     }
 
-    // Members are strictly restricted to their own ID
-    if (req.user.role === 'member') {
-      const targetUserId =
-        req.params[userIdField] ||
-        req.params.id ||
-        req.query[userIdField] ||
-        req.body[userIdField];
+    // 3. Regular Members are strictly restricted to self-access
+    const effectiveRole = req.user.activeRole || req.user.role;
+    if (req.user.role === 'member' && (!effectiveRole || effectiveRole === 'member')) {
+      return res.status(403).json({
+        success: false,
+        error: 'Access denied: You are only authorized to access your own personal records.',
+      });
+    }
 
-      const currentUserId = req.user._id?.toString() || req.user.id?.toString();
+    // 4. Department Heads / Leads (check activeRole or primary role)
+    if (effectiveRole.startsWith('dept_') || effectiveRole === 'hr') {
+      if (!targetUserId) {
+        return next();
+      }
 
-      if (targetUserId && targetUserId.toString() !== currentUserId) {
+      // Fetch the target user to verify departmental membership
+      let targetUser = null;
+      try {
+        const User = require('../models/User');
+        targetUser = await User.findById(targetUserId);
+      } catch {}
+      if (!targetUser) {
+        targetUser = getMemoryUser(targetUserId);
+      }
+
+      if (!targetUser) {
+        return res.status(404).json({ success: false, error: 'Member record not found.' });
+      }
+
+      const callerDept = (req.user.activeDepartment || req.user.department || DEPT_ROLE_MAP[effectiveRole]?.name || '').toLowerCase();
+      const callerCode = (req.user.activeDepartmentCode || req.user.departmentCode || DEPT_ROLE_MAP[effectiveRole]?.code || '').toLowerCase();
+
+      // Check if target user belongs to caller's department (either as primary department or in memberships)
+      const targetInDept =
+        (targetUser.department && targetUser.department.toLowerCase() === callerDept) ||
+        (targetUser.departmentCode && targetUser.departmentCode.toLowerCase() === callerCode) ||
+        (Array.isArray(targetUser.memberships) &&
+          targetUser.memberships.some(
+            (m) =>
+              m.department?.toLowerCase() === callerDept ||
+              m.departmentCode?.toLowerCase() === callerCode
+          ));
+
+      if (!targetInDept) {
         return res.status(403).json({
           success: false,
-          error: 'Access denied: You are only authorized to access your own personal records.',
+          error: `Department Privacy Violation: Member does not belong to your department (${req.user.activeDepartment || req.user.department}).`,
         });
       }
+
+      // Welfare regional isolation check
+      if (callerDept === 'welfare') {
+        const callerScope = getWelfareRegionalScope(req.user);
+        const targetRegion =
+          targetUser.region ||
+          (Array.isArray(targetUser.memberships) &&
+            targetUser.memberships.find((m) => m.department?.toLowerCase() === 'welfare')?.region);
+
+        if (callerScope === 'Punjab' && targetRegion === 'Sindh') {
+          return res.status(403).json({
+            success: false,
+            error: 'Regional Access Violation: Head of Punjab cannot access records of Sindh regional members.',
+          });
+        }
+        if (callerScope === 'Sindh' && targetRegion === 'Punjab') {
+          return res.status(403).json({
+            success: false,
+            error: 'Regional Access Violation: Head of Sindh cannot access records of Punjab regional members.',
+          });
+        }
+      }
+
+      return next();
     }
 
-    next();
+    return res.status(403).json({
+      success: false,
+      error: 'Access denied: You do not hold sufficient privileges to access this member record.',
+    });
   };
 };
 
@@ -646,4 +822,5 @@ module.exports = {
   validateRoleDesignation,
   hasCapability,
   isDepartmentMatch,
+  getWelfareRegionalScope,
 };

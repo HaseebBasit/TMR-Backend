@@ -9,7 +9,7 @@
  */
 
 // ---------------------------------------------------------------------------
-// 1. Technical Roles (Exactly 9 Approved Roles - Immutable)
+// 1. Technical Roles (Core Approved Roles)
 // ---------------------------------------------------------------------------
 const TECHNICAL_ROLES = Object.freeze({
   SUPER_ADMIN: 'super_admin',
@@ -17,7 +17,9 @@ const TECHNICAL_ROLES = Object.freeze({
   DEPT_MEDIA: 'dept_media',
   DEPT_MARKETING: 'dept_marketing',
   DEPT_OUTREACH: 'dept_outreach',
+  DEPT_OAM: 'dept_oam',
   DEPT_CONTENT: 'dept_content',
+  DEPT_WELFARE: 'dept_welfare',
   HR: 'hr',
   FINANCE: 'finance',
   MEMBER: 'member',
@@ -30,7 +32,9 @@ const OPERATIONAL_DEPT_ROLES = Object.freeze([
   TECHNICAL_ROLES.DEPT_MEDIA,
   TECHNICAL_ROLES.DEPT_MARKETING,
   TECHNICAL_ROLES.DEPT_OUTREACH,
+  TECHNICAL_ROLES.DEPT_OAM,
   TECHNICAL_ROLES.DEPT_CONTENT,
+  TECHNICAL_ROLES.DEPT_WELFARE,
 ]);
 
 // ---------------------------------------------------------------------------
@@ -38,9 +42,14 @@ const OPERATIONAL_DEPT_ROLES = Object.freeze([
 // ---------------------------------------------------------------------------
 const OPERATIONAL_DESIGNATIONS = Object.freeze({
   HEAD: 'head',
+  HEAD_OF_PUNJAB: 'head_of_punjab',
+  HEAD_OF_SINDH: 'head_of_sindh',
   DIRECTOR: 'director',
+  DIRECTOR_GRAPHICS: 'director_graphics',
   ASSISTANT_DIRECTOR: 'assistant_director',
+  COORDINATION_INCHARGE: 'coordination_incharge',
   MEMBER: 'member',
+  VOLUNTEER: 'volunteer',
 });
 
 const HR_DESIGNATIONS = Object.freeze({
@@ -58,24 +67,36 @@ const ALL_APPROVED_DESIGNATIONS = Object.freeze([
 // Title-case / display aliases normalized to canonical lowercase snake_case
 const DESIGNATION_ALIAS_MAP = Object.freeze({
   head: 'head',
+  head_of_punjab: 'head_of_punjab',
+  head_of_sindh: 'head_of_sindh',
   director: 'director',
+  director_graphics: 'director_graphics',
   assistant_director: 'assistant_director',
+  coordination_incharge: 'coordination_incharge',
   member: 'member',
+  volunteer: 'volunteer',
   hr_head: 'hr_head',
   hr_director: 'hr_director',
   hr_coordination_incharge: 'hr_coordination_incharge',
   hr_member: 'hr_member',
   // Title-case variants
   'Head': 'head',
+  'Head of Punjab': 'head_of_punjab',
+  'Head of Sindh': 'head_of_sindh',
   'Director': 'director',
+  'Director (Graphics Designing)': 'director_graphics',
+  'Director (Graphics)': 'director_graphics',
   'Assistant Director': 'assistant_director',
   'Member': 'member',
+  'Volunteer': 'volunteer',
+  'Co-ordination Incharge': 'coordination_incharge',
+  'Coordination Incharge': 'coordination_incharge',
   'HR Head': 'hr_head',
   'HR Director': 'hr_director',
   'HR Coordination In-charge': 'hr_coordination_incharge',
   'HR Coordination Incharge': 'hr_coordination_incharge',
   'HR Member': 'hr_member',
-  'Volunteer / Team Member': 'member',
+  'Volunteer / Team Member': 'volunteer',
 });
 
 /**
@@ -84,9 +105,13 @@ const DESIGNATION_ALIAS_MAP = Object.freeze({
  */
 function normalizeDesignation(designation) {
   if (!designation || typeof designation !== 'string') return null;
-  const trimmed = designation.trim();
+  let trimmed = designation.trim();
   if (trimmed === '' || trimmed.toLowerCase() === 'none' || trimmed.toLowerCase() === 'null') {
     return null;
+  }
+  // Strip wrapping parentheses if present, e.g. "(Head)" -> "Head"
+  if (trimmed.startsWith('(') && trimmed.endsWith(')')) {
+    trimmed = trimmed.substring(1, trimmed.length - 1).trim();
   }
   return DESIGNATION_ALIAS_MAP[trimmed] || DESIGNATION_ALIAS_MAP[trimmed.toLowerCase()] || null;
 }
@@ -100,10 +125,18 @@ const ROLE_DESIGNATION_COMPATIBILITY = Object.freeze({
   [TECHNICAL_ROLES.DEPT_MEDIA]: Object.freeze(Object.values(OPERATIONAL_DESIGNATIONS)),
   [TECHNICAL_ROLES.DEPT_MARKETING]: Object.freeze(Object.values(OPERATIONAL_DESIGNATIONS)),
   [TECHNICAL_ROLES.DEPT_OUTREACH]: Object.freeze(Object.values(OPERATIONAL_DESIGNATIONS)),
+  [TECHNICAL_ROLES.DEPT_OAM]: Object.freeze(Object.values(OPERATIONAL_DESIGNATIONS)),
   [TECHNICAL_ROLES.DEPT_CONTENT]: Object.freeze(Object.values(OPERATIONAL_DESIGNATIONS)),
-  [TECHNICAL_ROLES.HR]: Object.freeze(Object.values(HR_DESIGNATIONS)),
+  [TECHNICAL_ROLES.DEPT_WELFARE]: Object.freeze(Object.values(OPERATIONAL_DESIGNATIONS)),
+  [TECHNICAL_ROLES.HR]: Object.freeze([
+    ...Object.values(HR_DESIGNATIONS),
+    OPERATIONAL_DESIGNATIONS.ASSISTANT_DIRECTOR,
+    OPERATIONAL_DESIGNATIONS.COORDINATION_INCHARGE,
+    OPERATIONAL_DESIGNATIONS.VOLUNTEER,
+    OPERATIONAL_DESIGNATIONS.MEMBER,
+  ]),
   [TECHNICAL_ROLES.FINANCE]: Object.freeze([null, undefined, 'none', 'member']),
-  [TECHNICAL_ROLES.MEMBER]: Object.freeze([OPERATIONAL_DESIGNATIONS.MEMBER]),
+  [TECHNICAL_ROLES.MEMBER]: Object.freeze([OPERATIONAL_DESIGNATIONS.MEMBER, OPERATIONAL_DESIGNATIONS.VOLUNTEER]),
 });
 
 /**
@@ -157,15 +190,15 @@ function validateRoleDesignation(role, rawDesignation) {
     return { valid: true, designation: 'member' };
   }
 
-  // Member role cannot claim leadership designations
+  // Member role cannot claim leadership designations (only member and volunteer are permitted)
   if (role === TECHNICAL_ROLES.MEMBER) {
-    if (normalized !== OPERATIONAL_DESIGNATIONS.MEMBER) {
+    if (![OPERATIONAL_DESIGNATIONS.MEMBER, OPERATIONAL_DESIGNATIONS.VOLUNTEER].includes(normalized)) {
       return {
         valid: false,
         error: `Users with technical role 'member' cannot be assigned leadership designation '${rawDesignation}'.`,
       };
     }
-    return { valid: true, designation: OPERATIONAL_DESIGNATIONS.MEMBER };
+    return { valid: true, designation: normalized };
   }
 
   // Operational department roles (Literature, Media, etc.)
@@ -182,14 +215,17 @@ function validateRoleDesignation(role, rawDesignation) {
 
   // HR technical role
   if (role === TECHNICAL_ROLES.HR) {
+    let hrNormalized = normalized;
+    if (hrNormalized === OPERATIONAL_DESIGNATIONS.HEAD) hrNormalized = HR_DESIGNATIONS.HR_HEAD;
+    if (hrNormalized === OPERATIONAL_DESIGNATIONS.DIRECTOR) hrNormalized = HR_DESIGNATIONS.HR_DIRECTOR;
     const allowed = ROLE_DESIGNATION_COMPATIBILITY[role];
-    if (!allowed.includes(normalized)) {
+    if (!allowed.includes(hrNormalized)) {
       return {
         valid: false,
         error: `HR role cannot receive operational department designation '${rawDesignation}'. Allowed HR designations: ${allowed.join(', ')}.`,
       };
     }
-    return { valid: true, designation: normalized };
+    return { valid: true, designation: hrNormalized };
   }
 
   return { valid: false, error: 'Unauthorized role-designation combination.' };
@@ -269,10 +305,10 @@ function hasCapability(user, capability, context = {}) {
   }
 
   // 2. Confidential Grading View: STRICT ACCESS GATE
-  // Only Super Admin and Department Heads for their own department
+  // Only Super Admin and Department Heads (including Regional Welfare Heads) for their own department
   if (capability === CAPABILITIES.CONFIDENTIAL_GRADING_VIEW) {
     if (!OPERATIONAL_DEPT_ROLES.includes(role)) return false;
-    if (designation !== OPERATIONAL_DESIGNATIONS.HEAD) return false;
+    if (!['head', 'head_of_punjab', 'head_of_sindh'].includes(designation)) return false;
 
     // Must match caller's authenticated department
     if (context.targetDepartment) {
@@ -284,17 +320,17 @@ function hasCapability(user, capability, context = {}) {
   // 3. Department Operational Access
   if (capability === CAPABILITIES.DEPARTMENT_OPERATIONAL_ACCESS) {
     if (OPERATIONAL_DEPT_ROLES.includes(role)) {
-      if (['head', 'director', 'assistant_director'].includes(designation)) {
+      if (['head', 'director', 'director_graphics', 'assistant_director', 'head_of_punjab', 'head_of_sindh', 'coordination_incharge'].includes(designation)) {
         return context.targetDepartment ? isDepartmentMatch(user, context.targetDepartment) : true;
       }
     }
     return false;
   }
 
-  // 4. Final Task Approval: ONLY original owning department's Head or Director
+  // 4. Final Task Approval: ONLY original owning department's Head, Regional Head, or Director
   if (capability === CAPABILITIES.FINAL_TASK_APPROVAL) {
     if (!OPERATIONAL_DEPT_ROLES.includes(role)) return false;
-    if (!['head', 'director'].includes(designation)) return false;
+    if (!['head', 'director', 'director_graphics', 'head_of_punjab', 'head_of_sindh'].includes(designation)) return false;
     const targetDept = context.originalDepartment || context.targetDepartment;
     return targetDept ? isDepartmentMatch(user, targetDept) : true;
   }
@@ -302,14 +338,14 @@ function hasCapability(user, capability, context = {}) {
   // 5. Task Recommendation
   if (capability === CAPABILITIES.TASK_RECOMMENDATION) {
     if (!OPERATIONAL_DEPT_ROLES.includes(role)) return false;
-    if (!['head', 'director', 'assistant_director'].includes(designation)) return false;
+    if (!['head', 'director', 'director_graphics', 'assistant_director', 'head_of_punjab', 'head_of_sindh'].includes(designation)) return false;
     return context.targetDepartment ? isDepartmentMatch(user, context.targetDepartment) : true;
   }
 
   // 6. Final Leave Approval
   if (capability === CAPABILITIES.FINAL_LEAVE_APPROVAL) {
     if (OPERATIONAL_DEPT_ROLES.includes(role)) {
-      if (!['head', 'director'].includes(designation)) return false;
+      if (!['head', 'director', 'head_of_punjab', 'head_of_sindh'].includes(designation)) return false;
       return context.targetDepartment ? isDepartmentMatch(user, context.targetDepartment) : true;
     }
     // HR Leadership can approve leave ONLY for HR department members
@@ -323,7 +359,7 @@ function hasCapability(user, capability, context = {}) {
   // 7. Leave Recommendation
   if (capability === CAPABILITIES.LEAVE_RECOMMENDATION) {
     if (OPERATIONAL_DEPT_ROLES.includes(role)) {
-      if (!['head', 'director', 'assistant_director'].includes(designation)) return false;
+      if (!['head', 'director', 'director_graphics', 'assistant_director', 'head_of_punjab', 'head_of_sindh'].includes(designation)) return false;
       return context.targetDepartment ? isDepartmentMatch(user, context.targetDepartment) : true;
     }
     if (role === TECHNICAL_ROLES.HR) {
@@ -468,13 +504,66 @@ function hasCapability(user, capability, context = {}) {
 
 /**
  * Helper to test if a target department matches the user's assigned department.
+ * Checks active context, primary department, and multi-department memberships.
  */
 function isDepartmentMatch(user, targetDepartment) {
   if (!user || !targetDepartment) return false;
+  if (user.role === TECHNICAL_ROLES.SUPER_ADMIN) return true;
+
   const target = targetDepartment.toLowerCase().trim();
+
+  // 1. Active department context match
+  if (user.activeDepartment && user.activeDepartment.toLowerCase().trim() === target) return true;
+  if (user.activeDepartmentCode && user.activeDepartmentCode.toLowerCase().trim() === target) return true;
+
+  // 2. Primary department match
   const userDept = (user.department || '').toLowerCase().trim();
   const userCode = (user.departmentCode || '').toLowerCase().trim();
-  return target === userDept || target === userCode;
+  if (target === userDept || target === userCode) return true;
+
+  // 3. Multi-department memberships match
+  if (Array.isArray(user.memberships) && user.memberships.length > 0) {
+    return user.memberships.some((m) => {
+      const mDept = (m.department || '').toLowerCase().trim();
+      const mCode = (m.departmentCode || '').toLowerCase().trim();
+      return target === mDept || target === mCode;
+    });
+  }
+
+  return false;
+}
+
+/**
+ * Helper to determine a user's Welfare regional scope ('Punjab', 'Sindh', 'National', or 'ALL' for super admin)
+ */
+function getWelfareRegionalScope(user) {
+  if (!user) return null;
+  if (user.role === TECHNICAL_ROLES.SUPER_ADMIN || user.activeRole === TECHNICAL_ROLES.SUPER_ADMIN) {
+    return 'ALL';
+  }
+  const desig = normalizeDesignation(user.activeDesignation || user.designation);
+  const region = user.activeRegion || user.region;
+
+  if (desig === 'head_of_punjab' || region === 'Punjab') {
+    return 'Punjab';
+  }
+  if (desig === 'head_of_sindh' || region === 'Sindh') {
+    return 'Sindh';
+  }
+  if (region === 'National') {
+    return 'National';
+  }
+  // Check memberships
+  if (Array.isArray(user.memberships)) {
+    const welfareMem = user.memberships.find((m) => m.department?.toLowerCase() === 'welfare');
+    if (welfareMem) {
+      const mDesig = normalizeDesignation(welfareMem.designation);
+      if (mDesig === 'head_of_punjab' || welfareMem.region === 'Punjab') return 'Punjab';
+      if (mDesig === 'head_of_sindh' || welfareMem.region === 'Sindh') return 'Sindh';
+      if (welfareMem.region === 'National') return 'National';
+    }
+  }
+  return null;
 }
 
 const DEPT_ROLE_MAP = Object.freeze({
@@ -482,7 +571,9 @@ const DEPT_ROLE_MAP = Object.freeze({
   dept_media: { name: 'Media', code: 'MED' },
   dept_marketing: { name: 'Marketing', code: 'MKT' },
   dept_outreach: { name: 'Outreach', code: 'OUT' },
+  dept_oam: { name: 'Outreach and Marketing', code: 'OAM' },
   dept_content: { name: 'Content Creation', code: 'CON' },
+  dept_welfare: { name: 'Welfare', code: 'WEL' },
 });
 
 module.exports = {
@@ -502,4 +593,5 @@ module.exports = {
   validateRoleDesignation,
   hasCapability,
   isDepartmentMatch,
+  getWelfareRegionalScope,
 };

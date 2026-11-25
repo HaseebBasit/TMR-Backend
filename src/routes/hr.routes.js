@@ -90,7 +90,9 @@ const DEPT_ROLE_MAP = {
   dept_media: { name: 'Media', code: 'MED' },
   dept_marketing: { name: 'Marketing', code: 'MKT' },
   dept_outreach: { name: 'Outreach', code: 'OUT' },
+  dept_oam: { name: 'Outreach and Marketing', code: 'OAM' },
   dept_content: { name: 'Content Creation', code: 'CON' },
+  dept_welfare: { name: 'Welfare', code: 'WEL' },
   hr: { name: 'HR', code: 'HR' },
   finance: { name: 'Finance', code: 'FIN' },
 };
@@ -100,7 +102,9 @@ const VALID_DEPARTMENTS = [
   'Media',
   'Marketing',
   'Outreach',
+  'Outreach and Marketing',
   'Content Creation',
+  'Welfare',
   'HR',
   'Finance',
 ];
@@ -1249,7 +1253,9 @@ router.post('/leaves', protect, async (req, res) => {
     const validLeaveTypes = ['Sick', 'Exam', 'Personal', 'Emergency'];
     const chosenType = leaveType && validLeaveTypes.includes(leaveType) ? leaveType : 'Personal';
 
-    const userDept = req.user.department || (req.user.role.startsWith('dept_') ? DEPT_ROLE_MAP[req.user.role]?.name : 'Literature') || 'Literature';
+    const effectiveRole = req.user.activeRole || req.user.role;
+    const userDept = req.user.activeDepartment || req.user.department || (effectiveRole.startsWith('dept_') ? DEPT_ROLE_MAP[effectiveRole]?.name : 'Literature') || 'Literature';
+    const userRegion = req.user.activeRegion || req.user.region || req.body.region || (userDept === 'Welfare' ? 'National' : null);
 
     let leaveRecord = null;
     try {
@@ -1258,6 +1264,7 @@ router.post('/leaves', protect, async (req, res) => {
         memberName: req.user.name,
         memberEmail: req.user.email,
         department: userDept,
+        region: userRegion,
         leaveType: chosenType,
         startDate: start,
         endDate: end,
@@ -1283,6 +1290,7 @@ router.post('/leaves', protect, async (req, res) => {
         memberName: req.user.name,
         memberEmail: req.user.email,
         department: userDept,
+        region: userRegion,
         leaveType: chosenType,
         startDate: start,
         endDate: end,
@@ -1367,7 +1375,8 @@ router.get('/leaves/my', protect, async (req, res) => {
  */
 router.get('/leaves/department', protect, async (req, res) => {
   try {
-    const isDeptHead = req.user.role.startsWith('dept_');
+    const effectiveRole = req.user.activeRole || req.user.role;
+    const isDeptHead = effectiveRole.startsWith('dept_');
     const isSuperAdmin = req.user.role === 'super_admin';
 
     if (!isDeptHead && !isSuperAdmin) {
@@ -1377,7 +1386,7 @@ router.get('/leaves/department', protect, async (req, res) => {
       });
     }
 
-    const deptName = isDeptHead ? DEPT_ROLE_MAP[req.user.role]?.name : req.query.department;
+    const deptName = isDeptHead ? (req.user.activeDepartment || DEPT_ROLE_MAP[effectiveRole]?.name) : req.query.department;
     if (!deptName && !isSuperAdmin) {
       return res.status(400).json({ success: false, error: 'Department could not be identified.' });
     }
@@ -1385,12 +1394,27 @@ router.get('/leaves/department', protect, async (req, res) => {
     let leaves = [];
     try {
       const filter = deptName ? { department: deptName } : {};
+      if (deptName === 'Welfare' && !isSuperAdmin) {
+        const { getWelfareRegionalScope } = require('../constants/roles');
+        const callerScope = getWelfareRegionalScope(req.user);
+        if (callerScope === 'Punjab') {
+          filter.region = { $in: ['Punjab', 'National'] };
+        } else if (callerScope === 'Sindh') {
+          filter.region = { $in: ['Sindh', 'National'] };
+        }
+      }
       leaves = await LeaveRequest.find(filter).sort({ createdAt: -1 });
     } catch {}
 
     if (!leaves || leaves.length === 0) {
       leaves = getMemoryLeavesList();
       if (deptName) leaves = leaves.filter((l) => l.department === deptName);
+      if (deptName === 'Welfare' && !isSuperAdmin) {
+        const { getWelfareRegionalScope } = require('../constants/roles');
+        const callerScope = getWelfareRegionalScope(req.user);
+        if (callerScope === 'Punjab') leaves = leaves.filter((l) => l.region !== 'Sindh');
+        else if (callerScope === 'Sindh') leaves = leaves.filter((l) => l.region !== 'Punjab');
+      }
     }
 
     return res.json({ success: true, count: leaves.length, department: deptName, leaves });
@@ -1451,14 +1475,34 @@ router.get('/leaves/:id', protect, async (req, res) => {
     const isOwner = leave.memberId?.toString() === currentUserId;
     const isSuperAdmin = req.user.role === 'super_admin';
     const isHR = req.user.role === 'hr';
+    const effectiveRole = req.user.activeRole || req.user.role;
+    const effectiveDept = req.user.activeDepartment || req.user.department || DEPT_ROLE_MAP[effectiveRole]?.name;
     const isSameDeptHead =
-      req.user.role.startsWith('dept_') && DEPT_ROLE_MAP[req.user.role]?.name === leave.department;
+      effectiveRole.startsWith('dept_') && effectiveDept?.toLowerCase() === leave.department?.toLowerCase();
 
     if (!isOwner && !isSuperAdmin && !isHR && !isSameDeptHead) {
       return res.status(403).json({
         success: false,
         error: 'Forbidden: You do not have permission to view this leave request.',
       });
+    }
+
+    // Welfare Regional Isolation check
+    if (leave.department === 'Welfare' && !isSuperAdmin && !isHR && !isOwner) {
+      const { getWelfareRegionalScope } = require('../constants/roles');
+      const callerScope = getWelfareRegionalScope(req.user);
+      if (callerScope === 'Punjab' && leave.region === 'Sindh') {
+        return res.status(403).json({
+          success: false,
+          error: 'Regional Access Violation: Head of Punjab cannot view Sindh regional leave requests.',
+        });
+      }
+      if (callerScope === 'Sindh' && leave.region === 'Punjab') {
+        return res.status(403).json({
+          success: false,
+          error: 'Regional Access Violation: Head of Sindh cannot view Punjab regional leave requests.',
+        });
+      }
     }
 
     return res.json({ success: true, leave });
@@ -1519,10 +1563,13 @@ router.patch('/leaves/:id/review', protect, async (req, res) => {
 
     // 2. Departmental boundary check
     const isOperationalDept = VALID_DEPARTMENTS.includes(leave.department) && leave.department !== 'HR';
+    const effectiveRole = req.user.activeRole || req.user.role;
+    const effectiveDept = req.user.activeDepartment || req.user.department || DEPT_ROLE_MAP[effectiveRole]?.name;
+    const effectiveDesig = normalizeDesignation(req.user.activeDesignation || req.user.designation);
     const isSameDeptHeadOrDirector =
-      req.user.role.startsWith('dept_') &&
-      DEPT_ROLE_MAP[req.user.role]?.name === leave.department &&
-      ['head', 'director'].includes(normalizeDesignation(req.user.designation));
+      effectiveRole.startsWith('dept_') &&
+      effectiveDept?.toLowerCase() === leave.department?.toLowerCase() &&
+      ['head', 'director', 'head_of_punjab', 'head_of_sindh'].includes(effectiveDesig);
 
     if (isOperationalDept) {
       // For operational departments, HR (even HR Head/Director) CANNOT approve! Only Dept Head/Director or Super Admin
@@ -1537,6 +1584,32 @@ router.patch('/leaves/:id/review', protect, async (req, res) => {
           success: false,
           error: `Forbidden: Only Super Admin or the ${leave.department} Department Head / Director can review this leave request.`,
         });
+      }
+
+      // Welfare Regional isolation for review
+      if (leave.department === 'Welfare' && !isSuperAdmin) {
+        const { getWelfareRegionalScope } = require('../constants/roles');
+        const callerScope = getWelfareRegionalScope(req.user);
+        if (callerScope === 'Punjab') {
+          if (leave.region !== 'Punjab') {
+            return res.status(403).json({
+              success: false,
+              error: 'Regional Access Violation: Head of Punjab can only approve or reject Punjab regional leave requests.',
+            });
+          }
+        } else if (callerScope === 'Sindh') {
+          if (leave.region !== 'Sindh') {
+            return res.status(403).json({
+              success: false,
+              error: 'Regional Access Violation: Head of Sindh can only approve or reject Sindh regional leave requests.',
+            });
+          }
+        } else {
+          return res.status(403).json({
+            success: false,
+            error: 'Regional Access Violation: You do not hold regional authority to review this leave request.',
+          });
+        }
       }
     } else if (leave.department === 'HR') {
       // HR department leaves can be approved by Super Admin or HR Head / HR Director

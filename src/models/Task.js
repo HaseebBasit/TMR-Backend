@@ -8,12 +8,29 @@ const TaskSchema = new mongoose.Schema(
     department: {
       type: String,
       required: true,
-      enum: ['Literature', 'Media', 'Marketing', 'Outreach', 'Content Creation', 'Administration', 'HR', 'Finance'],
+      enum: [
+        'Literature',
+        'Media',
+        'Marketing',
+        'Outreach',
+        'Outreach and Marketing',
+        'Content Creation',
+        'Welfare',
+        'Administration',
+        'HR',
+        'Finance',
+      ],
       index: true,
     },
     departmentCode: {
       type: String,
-      enum: ['LIT', 'MED', 'MKT', 'OUT', 'CON', 'ADM', 'HR', 'FIN'],
+      enum: ['LIT', 'MED', 'MKT', 'OUT', 'OAM', 'CON', 'WEL', 'ADM', 'HR', 'FIN'],
+      index: true,
+    },
+    region: {
+      type: String,
+      enum: ['Punjab', 'Sindh', 'National', null],
+      default: null,
       index: true,
     },
     // Original Owning Department (IMMUTABLE across all referrals and reassignments)
@@ -23,7 +40,18 @@ const TaskSchema = new mongoose.Schema(
       default: function () {
         return this.department;
       },
-      enum: ['Literature', 'Media', 'Marketing', 'Outreach', 'Content Creation', 'Administration', 'HR', 'Finance'],
+      enum: [
+        'Literature',
+        'Media',
+        'Marketing',
+        'Outreach',
+        'Outreach and Marketing',
+        'Content Creation',
+        'Welfare',
+        'Administration',
+        'HR',
+        'Finance',
+      ],
       index: true,
     },
     originalDepartmentCode: {
@@ -31,7 +59,7 @@ const TaskSchema = new mongoose.Schema(
       default: function () {
         return this.departmentCode;
       },
-      enum: ['LIT', 'MED', 'MKT', 'OUT', 'CON', 'ADM', 'HR', 'FIN'],
+      enum: ['LIT', 'MED', 'MKT', 'OUT', 'OAM', 'CON', 'WEL', 'ADM', 'HR', 'FIN'],
       index: true,
     },
     departmentId: { type: mongoose.Schema.Types.ObjectId, ref: 'Department' },

@@ -18,7 +18,7 @@ const {
 router.post(
   '/',
   protect,
-  authorize('super_admin', 'dept_literature', 'dept_media', 'dept_marketing', 'dept_outreach', 'dept_content'),
+  authorize('super_admin', 'dept_literature', 'dept_media', 'dept_marketing', 'dept_outreach', 'dept_oam', 'dept_content', 'dept_welfare'),
   requireDepartmentScope('department'),
   async (req, res) => {
     try {
@@ -59,11 +59,45 @@ router.post(
         targetMember = getMemoryUser(memberId);
       }
 
-      if (targetMember && targetMember.department && targetMember.department.toLowerCase() !== department.toLowerCase()) {
-        return res.status(403).json({
-          success: false,
-          error: `Department Isolation Violation: Member belongs to '${targetMember.department}', not '${department}'. You cannot assess members of other departments.`,
-        });
+      if (targetMember) {
+        const belongsToDept =
+          (targetMember.department && targetMember.department.toLowerCase() === department.toLowerCase()) ||
+          (Array.isArray(targetMember.memberships) &&
+            targetMember.memberships.some(
+              (m) =>
+                m.department?.toLowerCase() === department.toLowerCase() ||
+                m.departmentCode?.toLowerCase() === department.toLowerCase()
+            ));
+
+        if (!belongsToDept && req.user.role !== 'super_admin') {
+          return res.status(403).json({
+            success: false,
+            error: `Department Isolation Violation: Member belongs to '${targetMember.department}', not '${department}'. You cannot assess members of other departments.`,
+          });
+        }
+
+        // Welfare regional isolation check
+        if (department.toLowerCase() === 'welfare' && req.user.role !== 'super_admin') {
+          const { getWelfareRegionalScope } = require('../constants/roles');
+          const evalScope = getWelfareRegionalScope(req.user);
+          const targetRegion =
+            targetMember.region ||
+            (Array.isArray(targetMember.memberships) &&
+              targetMember.memberships.find((m) => m.department?.toLowerCase() === 'welfare')?.region);
+
+          if (evalScope === 'Punjab' && targetRegion === 'Sindh') {
+            return res.status(403).json({
+              success: false,
+              error: 'Regional Access Violation: Head of Punjab cannot assess Sindh regional members.',
+            });
+          }
+          if (evalScope === 'Sindh' && targetRegion === 'Punjab') {
+            return res.status(403).json({
+              success: false,
+              error: 'Regional Access Violation: Head of Sindh cannot assess Punjab regional members.',
+            });
+          }
+        }
       }
 
       const totalScore = taskExecution + deliverableQuality + punctuality + teamCollaboration;

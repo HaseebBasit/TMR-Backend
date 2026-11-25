@@ -13,7 +13,27 @@ const LeaveRequestSchema = new mongoose.Schema(
     department: {
       type: String,
       required: true,
-      enum: ['Literature', 'Media', 'Marketing', 'Outreach', 'Content Creation', 'HR', 'Finance'],
+      enum: [
+        'Literature',
+        'Media',
+        'Marketing',
+        'Outreach',
+        'Outreach and Marketing',
+        'Content Creation',
+        'Welfare',
+        'HR',
+        'Finance',
+      ],
+    },
+    departmentCode: {
+      type: String,
+      enum: ['LIT', 'MED', 'MKT', 'OUT', 'OAM', 'CON', 'WEL', 'HR', 'FIN'],
+    },
+    region: {
+      type: String,
+      enum: ['Punjab', 'Sindh', 'National', null],
+      default: null,
+      index: true,
     },
     leaveType: {
       type: String,

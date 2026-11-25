@@ -85,6 +85,73 @@ router.get('/departments', async (req, res) => {
   return res.json({ success: true, departments: departments || [] });
 });
 
+// Switch active department context (server-side authorization boundary)
+router.post(['/switch-department', '/portal/switch-department'], protect, async (req, res) => {
+  try {
+    const { department } = req.body;
+    if (!department) {
+      return res.status(400).json({ success: false, error: 'Department name or code is required.' });
+    }
+
+    const requested = department.trim().toLowerCase();
+
+    // 1. Super Admin unrestricted context switching
+    if (req.user.role === 'super_admin') {
+      return res.json({
+        success: true,
+        activeDepartment: department.trim(),
+        activeDepartmentCode: department.trim().substring(0, 3).toUpperCase(),
+        activeRole: 'super_admin',
+        activeDesignation: null,
+      });
+    }
+
+    // 2. Check multi-department memberships
+    let matchedMembership = null;
+    if (Array.isArray(req.user.memberships) && req.user.memberships.length > 0) {
+      matchedMembership = req.user.memberships.find(
+        (m) =>
+          m.department?.toLowerCase() === requested ||
+          m.departmentCode?.toLowerCase() === requested
+      );
+    }
+
+    // 3. Fallback: check primary department and code
+    if (!matchedMembership) {
+      const primaryName = (req.user.department || DEPT_ROLE_MAP[req.user.role]?.name || '').toLowerCase();
+      const primaryCode = (req.user.departmentCode || DEPT_ROLE_MAP[req.user.role]?.code || '').toLowerCase();
+      if (primaryName === requested || primaryCode === requested) {
+        matchedMembership = {
+          department: req.user.department || DEPT_ROLE_MAP[req.user.role]?.name,
+          departmentCode: req.user.departmentCode || DEPT_ROLE_MAP[req.user.role]?.code,
+          role: req.user.role,
+          designation: req.user.designation,
+          region: req.user.region || null,
+        };
+      }
+    }
+
+    // 4. Server-Side Security Gate: Reject if not authorized
+    if (!matchedMembership) {
+      return res.status(403).json({
+        success: false,
+        error: `Unauthorized department context: You do not hold an authorized membership in '${department}'.`,
+      });
+    }
+
+    return res.json({
+      success: true,
+      activeDepartment: matchedMembership.department,
+      activeDepartmentCode: matchedMembership.departmentCode,
+      activeRole: matchedMembership.role,
+      activeDesignation: matchedMembership.designation,
+      activeRegion: matchedMembership.region || null,
+    });
+  } catch (err) {
+    return res.status(500).json({ success: false, error: 'Failed to switch department context.' });
+  }
+});
+
 // Notifications - Personal User Notifications & Management
 router.get('/notifications', protect, async (req, res) => {
   const result = await getNotificationsForUser(req.user.id || req.user._id, req.query);
@@ -161,7 +228,13 @@ router.get('/super-admin/overview', protect, authorize('super_admin'), async (re
       const deptMembers = users.filter(
         (u) =>
           u.department?.toLowerCase() === doc.name.toLowerCase() ||
-          u.departmentCode?.toUpperCase() === doc.code?.toUpperCase()
+          u.departmentCode?.toUpperCase() === doc.code?.toUpperCase() ||
+          (Array.isArray(u.memberships) &&
+            u.memberships.some(
+              (m) =>
+                m.department?.toLowerCase() === doc.name.toLowerCase() ||
+                m.departmentCode?.toUpperCase() === doc.code?.toUpperCase()
+            ))
       );
       const deptTasks = tasks.filter(
         (t) =>
@@ -243,10 +316,7 @@ router.get('/super-admin/users', protect, authorize('super_admin'), async (req, 
     } catch {}
 
     if (!users || users.length === 0) {
-      users = getMemoryUsersList().map((u) => {
-        const { password, ...safeUser } = u;
-        return safeUser;
-      });
+      users = getMemoryUsersList();
       if (role) users = users.filter((u) => u.role === role);
       if (department) users = users.filter((u) => u.department === department);
       if (status) users = users.filter((u) => u.status === status);
@@ -256,7 +326,34 @@ router.get('/super-admin/users', protect, authorize('super_admin'), async (req, 
       }
     }
 
-    return res.json({ success: true, count: users.length, users });
+    const sanitizedUsers = users.map((u) => {
+      const doc = u.toObject ? u.toObject() : { ...u };
+      delete doc.password;
+      delete doc.activationToken; // STRICT DEFENSE: never leak raw or hashed token
+
+      let activationStatus = 'none';
+      if (doc.status === 'active') {
+        activationStatus = 'active';
+      } else if (doc.status === 'suspended') {
+        activationStatus = 'suspended';
+      } else if (doc.activationRevokedAt && !doc.activationExpires) {
+        activationStatus = 'revoked';
+      } else if (doc.activationExpires && new Date(doc.activationExpires) < new Date()) {
+        activationStatus = 'expired';
+      } else if (doc.activationExpires) {
+        activationStatus = 'pending';
+      }
+
+      return {
+        ...doc,
+        activationStatus,
+        activationExpires: doc.activationExpires || null,
+        activationGeneratedAt: doc.activationGeneratedAt || null,
+        activationRevokedAt: doc.activationRevokedAt || null,
+      };
+    });
+
+    return res.json({ success: true, count: sanitizedUsers.length, users: sanitizedUsers });
   } catch (err) {
     return res.status(500).json({ success: false, error: 'Failed to fetch users.' });
   }
@@ -352,6 +449,7 @@ router.post('/super-admin/users', protect, authorize('super_admin'), async (req,
       status: password ? 'active' : 'inactive',
       activationToken: hashedActivationToken,
       activationExpires,
+      activationGeneratedAt: new Date(),
       isPrivilegedHR: role === 'super_admin' ? true : false,
       tokenVersion: 0,
       createdAt: new Date(),
@@ -370,11 +468,22 @@ router.post('/super-admin/users', protect, authorize('super_admin'), async (req,
       actorId: req.user.id || req.user._id,
       actorName: req.user.name,
       actorRole: req.user.role,
-      action: 'USER_CREATED_BY_ADMIN',
+      action: 'ORGANIZATIONAL_ACCOUNT_PROVISIONED',
       module: 'SUPER_ADMIN',
       targetId: newUser.id,
       targetModel: 'User',
-      description: `Super Admin created user ${name} (${normalizedEmail}) with role ${role}. Activation link generated.`,
+      description: `Super Admin provisioned account for ${name} (${normalizedEmail}) with role ${role}.`,
+    }).catch(() => null);
+
+    await AuditLog.create({
+      actorId: req.user.id || req.user._id,
+      actorName: req.user.name,
+      actorRole: req.user.role,
+      action: 'ACTIVATION_LINK_GENERATED',
+      module: 'SUPER_ADMIN',
+      targetId: newUser.id,
+      targetModel: 'User',
+      description: `Super Admin generated activation link for ${name} (${normalizedEmail}).`,
     }).catch(() => null);
 
     const { password: _, activationToken: __, ...safeUser } = newUser;
@@ -437,8 +546,11 @@ router.post('/super-admin/users/:id/regenerate-activation', protect, authorize('
     const hashedActivationToken = crypto.createHash('sha256').update(rawActivationToken).digest('hex');
     const activationExpires = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
 
+    const now = new Date();
     user.activationToken = hashedActivationToken;
     user.activationExpires = activationExpires;
+    user.activationGeneratedAt = now;
+    user.activationRevokedAt = undefined;
     user.status = 'inactive';
 
     try {
@@ -455,7 +567,7 @@ router.post('/super-admin/users/:id/regenerate-activation', protect, authorize('
       actorId: req.user.id || req.user._id,
       actorName: req.user.name,
       actorRole: req.user.role,
-      action: 'ADMIN_REGENERATED_ACTIVATION',
+      action: 'ACTIVATION_LINK_REGENERATED',
       module: 'SUPER_ADMIN',
       targetId: (user._id || user.id)?.toString(),
       targetModel: 'User',
@@ -473,9 +585,143 @@ router.post('/super-admin/users/:id/regenerate-activation', protect, authorize('
       activationUrl,
       activationToken: rawActivationToken,
       expiresAt: activationExpires,
+      generatedAt: now,
     });
   } catch (err) {
     return res.status(500).json({ success: false, error: 'Failed to regenerate activation link.' });
+  }
+});
+
+/**
+ * @route   POST /api/super-admin/users/:id/revoke-activation
+ * @desc    Super Admin revokes an outstanding activation link for an account
+ * @access  Protected (Super Admin Only)
+ */
+router.post('/super-admin/users/:id/revoke-activation', protect, authorize('super_admin'), async (req, res) => {
+  try {
+    const { id } = req.params;
+    let user = null;
+    try {
+      user = await User.findById(id);
+    } catch {}
+    if (!user) {
+      user = getMemoryUsersList().find((u) => (u._id || u.id)?.toString() === id.toString());
+    }
+
+    if (!user) {
+      return res.status(404).json({ success: false, error: 'User not found.' });
+    }
+
+    if (user.role === 'super_admin') {
+      return res.status(400).json({
+        success: false,
+        error: 'Cannot revoke activation for Super Admin account.',
+      });
+    }
+
+    const now = new Date();
+    user.activationToken = undefined;
+    user.activationExpires = undefined;
+    user.activationRevokedAt = now;
+
+    try {
+      if (user.save) await user.save();
+      else setMemoryUser(user);
+    } catch {
+      setMemoryUser(user);
+    }
+
+    await AuditLog.create({
+      actorId: req.user.id || req.user._id,
+      actorName: req.user.name,
+      actorRole: req.user.role,
+      action: 'ACTIVATION_LINK_REVOKED',
+      module: 'SUPER_ADMIN',
+      targetId: (user._id || user.id)?.toString(),
+      targetModel: 'User',
+      description: `Super Admin revoked activation link for ${user.name} (${user.email}).`,
+    }).catch(() => null);
+
+    return res.json({
+      success: true,
+      message: `Activation link for ${user.name} has been revoked.`,
+      revokedAt: now,
+    });
+  } catch (err) {
+    return res.status(500).json({ success: false, error: 'Failed to revoke activation link.' });
+  }
+});
+
+/**
+ * @route   POST /api/super-admin/users/bulk-generate-activations
+ * @desc    Super Admin bulk-generates activation links for all eligible inactive accounts
+ * @access  Protected (Super Admin Only)
+ */
+router.post('/super-admin/users/bulk-generate-activations', protect, authorize('super_admin'), async (req, res) => {
+  try {
+    const baseUrl = process.env.FRONTEND_URL || 'http://localhost:3000';
+    let eligibleUsers = [];
+    try {
+      eligibleUsers = await User.find({ status: 'inactive', role: { $ne: 'super_admin' } });
+    } catch {}
+
+    if (!eligibleUsers || eligibleUsers.length === 0) {
+      eligibleUsers = getMemoryUsersList().filter((u) => u.status === 'inactive' && u.role !== 'super_admin');
+    }
+
+    const results = [];
+    const now = new Date();
+    const activationExpires = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
+
+    for (const user of eligibleUsers) {
+      const rawActivationToken = crypto.randomBytes(32).toString('hex');
+      const hashedActivationToken = crypto.createHash('sha256').update(rawActivationToken).digest('hex');
+
+      user.activationToken = hashedActivationToken;
+      user.activationExpires = activationExpires;
+      user.activationGeneratedAt = now;
+      user.activationRevokedAt = undefined;
+
+      try {
+        if (user.save) await user.save();
+        else setMemoryUser(user);
+      } catch {
+        setMemoryUser(user);
+      }
+
+      await AuditLog.create({
+        actorId: req.user.id || req.user._id,
+        actorName: req.user.name,
+        actorRole: req.user.role,
+        action: 'ACTIVATION_LINK_GENERATED',
+        module: 'SUPER_ADMIN',
+        targetId: (user._id || user.id)?.toString(),
+        targetModel: 'User',
+        description: `Super Admin generated activation link for ${user.name} (${user.email}).`,
+      }).catch(() => null);
+
+      results.push({
+        userId: (user._id || user.id)?.toString(),
+        name: user.name,
+        email: user.email,
+        department: user.department,
+        departmentCode: user.departmentCode,
+        role: user.role,
+        designation: user.designation,
+        activationUrl: `${baseUrl}/portal/activate?token=${rawActivationToken}`,
+        expiresAt: activationExpires,
+        generatedAt: now,
+      });
+    }
+
+    return res.json({
+      success: true,
+      count: results.length,
+      message: `Generated activation links for ${results.length} inactive account(s).`,
+      links: results,
+    });
+  } catch (err) {
+    return res.status(500).json({ success: false, error: 'Failed to bulk-generate activation links.' });
   }
 });
 
@@ -544,6 +790,7 @@ router.patch('/super-admin/users/:id', protect, authorize('super_admin'), async 
       user.status = status;
     }
     if (isPrivilegedHR !== undefined) user.isPrivilegedHR = Boolean(isPrivilegedHR);
+    if (role || status) user.tokenVersion = (user.tokenVersion || 0) + 1;
 
     try {
       await user.save();
@@ -811,19 +1058,28 @@ router.get(
 
       // Determine authoritative department name
       let authoritativeDept = department;
-      if (req.user.role.startsWith('dept_')) {
+      if (req.user.activeDepartment) {
+        authoritativeDept = req.user.activeDepartment;
+      } else if (req.user.role.startsWith('dept_')) {
         authoritativeDept = DEPT_ROLE_MAP[req.user.role]?.name || department;
       }
 
       // 1. Fetch Department Tasks
       let tasks = [];
       try {
-        tasks = await Task.find({
+        const taskFilter = {
           $or: [
             { department: authoritativeDept },
             { departmentCode: authoritativeDept.toUpperCase() },
           ],
-        }).sort({ createdAt: -1 });
+        };
+        if (authoritativeDept === 'Welfare' && req.user.role !== 'super_admin') {
+          const { getWelfareRegionalScope } = require('../constants/roles');
+          const callerScope = getWelfareRegionalScope(req.user);
+          if (callerScope === 'Punjab') taskFilter.region = { $in: ['Punjab', 'National'] };
+          else if (callerScope === 'Sindh') taskFilter.region = { $in: ['Sindh', 'National'] };
+        }
+        tasks = await Task.find(taskFilter).sort({ createdAt: -1 });
       } catch {}
 
       if (!tasks || tasks.length === 0) {
@@ -832,15 +1088,23 @@ router.get(
             t.department?.toLowerCase() === authoritativeDept.toLowerCase() ||
             t.departmentCode?.toUpperCase() === authoritativeDept.toUpperCase()
         );
+        if (authoritativeDept === 'Welfare' && req.user.role !== 'super_admin') {
+          const { getWelfareRegionalScope } = require('../constants/roles');
+          const callerScope = getWelfareRegionalScope(req.user);
+          if (callerScope === 'Punjab') tasks = tasks.filter((t) => t.region !== 'Sindh');
+          else if (callerScope === 'Sindh') tasks = tasks.filter((t) => t.region !== 'Punjab');
+        }
       }
 
-      // 2. Fetch Department Members
+      // 2. Fetch Department Members (supporting multi-department memberships)
       let members = [];
       try {
         members = await User.find({
           $or: [
             { department: authoritativeDept },
             { departmentCode: authoritativeDept.toUpperCase() },
+            { 'memberships.department': authoritativeDept },
+            { 'memberships.departmentCode': authoritativeDept.toUpperCase() },
           ],
         }).select('-password');
       } catch {}
@@ -849,7 +1113,13 @@ router.get(
         members = getMemoryUsersList().filter(
           (u) =>
             u.department?.toLowerCase() === authoritativeDept.toLowerCase() ||
-            u.departmentCode?.toUpperCase() === authoritativeDept.toUpperCase()
+            u.departmentCode?.toUpperCase() === authoritativeDept.toUpperCase() ||
+            (Array.isArray(u.memberships) &&
+              u.memberships.some(
+                (m) =>
+                  m.department?.toLowerCase() === authoritativeDept.toLowerCase() ||
+                  m.departmentCode?.toUpperCase() === authoritativeDept.toUpperCase()
+              ))
         );
       }
 
@@ -898,7 +1168,9 @@ router.get(
     try {
       const { department } = req.params;
       let authoritativeDept = department;
-      if (req.user.role.startsWith('dept_')) {
+      if (req.user.activeDepartment) {
+        authoritativeDept = req.user.activeDepartment;
+      } else if (req.user.role.startsWith('dept_')) {
         authoritativeDept = DEPT_ROLE_MAP[req.user.role]?.name || department;
       }
 
@@ -908,6 +1180,8 @@ router.get(
           $or: [
             { department: authoritativeDept },
             { departmentCode: authoritativeDept.toUpperCase() },
+            { 'memberships.department': authoritativeDept },
+            { 'memberships.departmentCode': authoritativeDept.toUpperCase() },
           ],
         }).select('-password');
       } catch {}
@@ -916,8 +1190,31 @@ router.get(
         members = getMemoryUsersList().filter(
           (u) =>
             u.department?.toLowerCase() === authoritativeDept.toLowerCase() ||
-            u.departmentCode?.toUpperCase() === authoritativeDept.toUpperCase()
+            u.departmentCode?.toUpperCase() === authoritativeDept.toUpperCase() ||
+            (Array.isArray(u.memberships) &&
+              u.memberships.some(
+                (m) =>
+                  m.department?.toLowerCase() === authoritativeDept.toLowerCase() ||
+                  m.departmentCode?.toUpperCase() === authoritativeDept.toUpperCase()
+              ))
         );
+      }
+
+      // Welfare regional isolation for member listing
+      if (authoritativeDept === 'Welfare' && req.user.role !== 'super_admin') {
+        const { getWelfareRegionalScope } = require('../constants/roles');
+        const callerScope = getWelfareRegionalScope(req.user);
+        if (callerScope === 'Punjab') {
+          members = members.filter((m) => {
+            const reg = m.region || (Array.isArray(m.memberships) && m.memberships.find((x) => x.department?.toLowerCase() === 'welfare')?.region);
+            return reg === 'Punjab' || reg === 'National' || !reg;
+          });
+        } else if (callerScope === 'Sindh') {
+          members = members.filter((m) => {
+            const reg = m.region || (Array.isArray(m.memberships) && m.memberships.find((x) => x.department?.toLowerCase() === 'welfare')?.region);
+            return reg === 'Sindh' || reg === 'National' || !reg;
+          });
+        }
       }
 
       const safeMembers = members.map((m) => ({
@@ -927,6 +1224,7 @@ router.get(
         role: m.role,
         designation: m.designation,
         status: m.status,
+        region: m.region || (Array.isArray(m.memberships) && m.memberships.find((x) => x.department?.toLowerCase() === 'welfare')?.region) || null,
       }));
 
       return res.json({ success: true, count: safeMembers.length, members: safeMembers });
@@ -949,7 +1247,9 @@ router.get(
     try {
       const { department } = req.params;
       let authoritativeDept = department;
-      if (req.user.role.startsWith('dept_')) {
+      if (req.user.activeDepartment) {
+        authoritativeDept = req.user.activeDepartment;
+      } else if (req.user.role.startsWith('dept_')) {
         authoritativeDept = DEPT_ROLE_MAP[req.user.role]?.name || department;
       }
 
@@ -959,6 +1259,16 @@ router.get(
           { departmentCode: authoritativeDept.toUpperCase() },
         ],
       };
+
+      if (authoritativeDept === 'Welfare' && req.user.role !== 'super_admin') {
+        const { getWelfareRegionalScope } = require('../constants/roles');
+        const callerScope = getWelfareRegionalScope(req.user);
+        if (callerScope === 'Punjab') {
+          filter.region = { $in: ['Punjab', 'National'] };
+        } else if (callerScope === 'Sindh') {
+          filter.region = { $in: ['Sindh', 'National'] };
+        }
+      }
 
       if (req.query.status) filter.status = req.query.status;
       if (req.query.priority) filter.priority = req.query.priority;
@@ -974,6 +1284,12 @@ router.get(
             t.department?.toLowerCase() === authoritativeDept.toLowerCase() ||
             t.departmentCode?.toUpperCase() === authoritativeDept.toUpperCase()
         );
+        if (authoritativeDept === 'Welfare' && req.user.role !== 'super_admin') {
+          const { getWelfareRegionalScope } = require('../constants/roles');
+          const callerScope = getWelfareRegionalScope(req.user);
+          if (callerScope === 'Punjab') tasks = tasks.filter((t) => t.region !== 'Sindh');
+          else if (callerScope === 'Sindh') tasks = tasks.filter((t) => t.region !== 'Punjab');
+        }
         if (req.query.status) tasks = tasks.filter((t) => t.status === req.query.status);
         if (req.query.priority) tasks = tasks.filter((t) => t.priority === req.query.priority);
       }
@@ -1081,16 +1397,26 @@ router.get('/tasks/referrals/incoming', protect, async (req, res) => {
 router.get('/tasks', protect, async (req, res) => {
   try {
     const q = {};
+    const effectiveRole = req.user.activeRole || req.user.role;
 
     // 1. Super Admin sees all or filters by department
     if (req.user.role === 'super_admin') {
       if (req.query.department) q.department = req.query.department;
       if (req.query.departmentCode) q.departmentCode = req.query.departmentCode;
     }
-    // 2. Department Heads are strictly scoped to their assigned department
-    else if (req.user.role.startsWith('dept_')) {
-      const assignedDept = DEPT_ROLE_MAP[req.user.role];
-      q.department = assignedDept?.name;
+    // 2. Department Heads are strictly scoped to their assigned active department
+    else if (effectiveRole.startsWith('dept_')) {
+      const assignedDept = req.user.activeDepartment || DEPT_ROLE_MAP[effectiveRole]?.name;
+      q.department = assignedDept;
+      if (assignedDept === 'Welfare') {
+        const { getWelfareRegionalScope } = require('../constants/roles');
+        const callerScope = getWelfareRegionalScope(req.user);
+        if (callerScope === 'Punjab') {
+          q.region = { $in: ['Punjab', 'National'] };
+        } else if (callerScope === 'Sindh') {
+          q.region = { $in: ['Sindh', 'National'] };
+        }
+      }
       delete q.departmentId;
     }
     // 3. Members only see tasks assigned to them
@@ -1112,6 +1438,12 @@ router.get('/tasks', protect, async (req, res) => {
       if (q.department) tasks = tasks.filter((t) => t.department === q.department);
       if (q.assignedTo) tasks = tasks.filter((t) => t.assignedTo?.toString() === q.assignedTo.toString());
       if (q.status) tasks = tasks.filter((t) => t.status === q.status);
+      if (q.department === 'Welfare' && req.user.role !== 'super_admin') {
+        const { getWelfareRegionalScope } = require('../constants/roles');
+        const callerScope = getWelfareRegionalScope(req.user);
+        if (callerScope === 'Punjab') tasks = tasks.filter((t) => t.region !== 'Sindh');
+        else if (callerScope === 'Sindh') tasks = tasks.filter((t) => t.region !== 'Punjab');
+      }
     }
 
     return res.json({ success: true, count: tasks.length, tasks });
@@ -1128,7 +1460,7 @@ router.get('/tasks', protect, async (req, res) => {
 router.post(
   '/tasks',
   protect,
-  authorize('super_admin', 'dept_literature', 'dept_media', 'dept_marketing', 'dept_outreach', 'dept_content', 'hr'),
+  authorize('super_admin', 'dept_literature', 'dept_media', 'dept_marketing', 'dept_outreach', 'dept_oam', 'dept_content', 'dept_welfare', 'hr'),
   async (req, res) => {
     try {
       const {
@@ -1143,6 +1475,7 @@ router.post(
         assignedMemberEmail,
         requiredDeliverables,
         referenceAttachments,
+        region,
       } = req.body;
 
       if (!title) {
@@ -1152,29 +1485,101 @@ router.post(
       let department = req.body.department;
       let departmentCode = req.body.departmentCode;
 
-      // Department Heads/Directors are strictly locked to their own department
-      if (req.user.role.startsWith('dept_')) {
-        const assignedDept = DEPT_ROLE_MAP[req.user.role];
-        department = assignedDept?.name;
-        departmentCode = assignedDept?.code;
+      const effectiveRole = req.user.activeRole || req.user.role;
+      const effectiveDept = req.user.activeDepartment || req.user.department || DEPT_ROLE_MAP[effectiveRole]?.name;
+      const effectiveCode = req.user.activeDepartmentCode || req.user.departmentCode || DEPT_ROLE_MAP[effectiveRole]?.code;
 
-        // Department isolation: Validate target member belongs to the same department
-        if (assignedTo) {
-          let targetMember = null;
-          try {
-            targetMember = await User.findById(assignedTo);
-          } catch {}
-          if (!targetMember) targetMember = getMemoryUser(assignedTo);
-          if (targetMember && targetMember.department && targetMember.department.toLowerCase() !== department.toLowerCase()) {
+      // Department Heads/Directors are strictly locked to their own active department
+      if (effectiveRole.startsWith('dept_')) {
+        department = effectiveDept;
+        departmentCode = effectiveCode;
+      } else if (!department && req.user.role === 'super_admin') {
+        department = 'Administration';
+        departmentCode = 'ADM';
+      }
+
+      // Welfare strict provincial data partitioning validation
+      let taskRegion = null;
+      if (department === 'Welfare') {
+        const { getWelfareRegionalScope } = require('../constants/roles');
+        const callerScope = getWelfareRegionalScope(req.user);
+
+        if (req.user.role !== 'super_admin') {
+          if (callerScope === 'Punjab') {
+            if (region && region !== 'Punjab') {
+              return res.status(403).json({
+                success: false,
+                error: 'Regional Isolation Violation: Head of Punjab can only create and assign tasks within Punjab.',
+              });
+            }
+            taskRegion = 'Punjab';
+          } else if (callerScope === 'Sindh') {
+            if (region && region !== 'Sindh') {
+              return res.status(403).json({
+                success: false,
+                error: 'Regional Isolation Violation: Head of Sindh can only create and assign tasks within Sindh.',
+              });
+            }
+            taskRegion = 'Sindh';
+          } else {
+            return res.status(403).json({
+              success: false,
+              error: 'Regional Isolation Violation: You do not hold regional authority to create Welfare tasks.',
+            });
+          }
+        } else {
+          // Super Admin can create Punjab, Sindh, or National
+          const VALID_REGIONS = ['Punjab', 'Sindh', 'National'];
+          taskRegion = region && VALID_REGIONS.includes(region) ? region : 'National';
+        }
+      }
+
+      // Validate target member assignment
+      if (assignedTo) {
+        let targetMember = null;
+        try {
+          targetMember = await User.findById(assignedTo);
+        } catch {}
+        if (!targetMember) targetMember = getMemoryUser(assignedTo);
+
+        if (targetMember) {
+          const belongsToDept =
+            (targetMember.department && targetMember.department.toLowerCase() === department.toLowerCase()) ||
+            (targetMember.departmentCode && targetMember.departmentCode.toUpperCase() === departmentCode?.toUpperCase()) ||
+            (Array.isArray(targetMember.memberships) &&
+              targetMember.memberships.some(
+                (m) =>
+                  m.department?.toLowerCase() === department.toLowerCase() ||
+                  m.departmentCode?.toUpperCase() === departmentCode?.toUpperCase()
+              ));
+
+          if (!belongsToDept && req.user.role !== 'super_admin') {
             return res.status(400).json({
               success: false,
               error: `Cross-Department Assignment Violation: You can only assign tasks to members in ${department}.`,
             });
           }
+
+          if (department === 'Welfare') {
+            const targetRegion =
+              targetMember.region ||
+              (Array.isArray(targetMember.memberships) &&
+                targetMember.memberships.find((m) => m.department?.toLowerCase() === 'welfare')?.region);
+
+            if (taskRegion === 'Punjab' && targetRegion === 'Sindh') {
+              return res.status(400).json({
+                success: false,
+                error: 'Cross-Region Assignment Violation: Cannot assign Punjab task to a Sindh regional member.',
+              });
+            }
+            if (taskRegion === 'Sindh' && targetRegion === 'Punjab') {
+              return res.status(400).json({
+                success: false,
+                error: 'Cross-Region Assignment Violation: Cannot assign Sindh task to a Punjab regional member.',
+              });
+            }
+          }
         }
-      } else if (!department && req.user.role === 'super_admin') {
-        department = 'Administration';
-        departmentCode = 'ADM';
       }
 
       const initialStatus = 'assigned';
@@ -1186,6 +1591,7 @@ router.post(
         instructions: instructions?.trim() || description?.trim() || '',
         department,
         departmentCode,
+        region: taskRegion,
         originalDepartment: department, // IMMUTABLE
         originalDepartmentCode: departmentCode,
         assignedTo: assignedTo || null,
@@ -1301,12 +1707,32 @@ router.patch('/tasks/:id/status', protect, async (req, res) => {
 
     // Authorization check
     const currentUserId = (req.user.id || req.user._id)?.toString();
+    const effectiveRole = req.user.activeRole || req.user.role;
+    const effectiveDept = req.user.activeDepartment || req.user.department || DEPT_ROLE_MAP[effectiveRole]?.name;
     const isAssigned = task.assignedTo?.toString() === currentUserId;
-    const isDeptHead = req.user.role.startsWith('dept_') && DEPT_ROLE_MAP[req.user.role]?.name === task.department;
+    const isDeptHead = effectiveRole.startsWith('dept_') && effectiveDept?.toLowerCase() === task.department?.toLowerCase();
     const isSuperAdmin = req.user.role === 'super_admin';
 
     if (!isAssigned && !isDeptHead && !isSuperAdmin) {
       return res.status(403).json({ success: false, error: 'You are not authorized to update this task.' });
+    }
+
+    // Welfare Regional isolation for task status
+    if (task.department === 'Welfare' && !isSuperAdmin && !isAssigned) {
+      const { getWelfareRegionalScope } = require('../constants/roles');
+      const callerScope = getWelfareRegionalScope(req.user);
+      if (callerScope === 'Punjab' && task.region === 'Sindh') {
+        return res.status(403).json({
+          success: false,
+          error: 'Regional Access Violation: Head of Punjab cannot access or modify Sindh regional tasks.',
+        });
+      }
+      if (callerScope === 'Sindh' && task.region === 'Punjab') {
+        return res.status(403).json({
+          success: false,
+          error: 'Regional Access Violation: Head of Sindh cannot access or modify Punjab regional tasks.',
+        });
+      }
     }
 
     // Role-specific transition rules:
@@ -1377,7 +1803,9 @@ router.patch('/tasks/:id/reassign', protect, async (req, res) => {
       return res.status(404).json({ success: false, error: 'Task not found.' });
     }
 
-    const isDeptHead = req.user.role.startsWith('dept_') && DEPT_ROLE_MAP[req.user.role]?.name === task.department;
+    const effectiveRole = req.user.activeRole || req.user.role;
+    const effectiveDept = req.user.activeDepartment || req.user.department || DEPT_ROLE_MAP[effectiveRole]?.name;
+    const isDeptHead = effectiveRole.startsWith('dept_') && effectiveDept?.toLowerCase() === task.department?.toLowerCase();
     const isSuperAdmin = req.user.role === 'super_admin';
 
     if (!isDeptHead && !isSuperAdmin) {
@@ -1387,17 +1815,79 @@ router.patch('/tasks/:id/reassign', protect, async (req, res) => {
       });
     }
 
+    // Welfare Regional isolation check for reassign
+    if (task.department === 'Welfare' && !isSuperAdmin) {
+      const { getWelfareRegionalScope } = require('../constants/roles');
+      const callerScope = getWelfareRegionalScope(req.user);
+      if (callerScope === 'Punjab') {
+        if (task.region === 'Sindh') {
+          return res.status(403).json({
+            success: false,
+            error: 'Regional Access Violation: Head of Punjab cannot reassign Sindh regional tasks.',
+          });
+        }
+        if (task.region === 'National') {
+          return res.status(403).json({
+            success: false,
+            error: 'Regional Access Violation: National Welfare tasks can only be reassigned by Super Admin.',
+          });
+        }
+      } else if (callerScope === 'Sindh') {
+        if (task.region === 'Punjab') {
+          return res.status(403).json({
+            success: false,
+            error: 'Regional Access Violation: Head of Sindh cannot reassign Punjab regional tasks.',
+          });
+        }
+        if (task.region === 'National') {
+          return res.status(403).json({
+            success: false,
+            error: 'Regional Access Violation: National Welfare tasks can only be reassigned by Super Admin.',
+          });
+        }
+      }
+    }
+
     let targetMember = null;
     try {
       targetMember = await User.findById(assignedTo);
     } catch {}
     if (!targetMember) targetMember = getMemoryUser(assignedTo);
 
-    if (isDeptHead && targetMember && targetMember.department && targetMember.department.toLowerCase() !== task.department.toLowerCase()) {
-      return res.status(400).json({
-        success: false,
-        error: `Department Isolation Violation: You can only reassign tasks to members within ${task.department}.`,
-      });
+    if (targetMember) {
+      const belongsToDept =
+        (targetMember.department && targetMember.department.toLowerCase() === task.department.toLowerCase()) ||
+        (Array.isArray(targetMember.memberships) &&
+          targetMember.memberships.some(
+            (m) => m.department?.toLowerCase() === task.department.toLowerCase()
+          ));
+
+      if (!belongsToDept && !isSuperAdmin) {
+        return res.status(400).json({
+          success: false,
+          error: `Department Isolation Violation: You can only reassign tasks to members within ${task.department}.`,
+        });
+      }
+
+      if (task.department === 'Welfare') {
+        const targetRegion =
+          targetMember.region ||
+          (Array.isArray(targetMember.memberships) &&
+            targetMember.memberships.find((m) => m.department?.toLowerCase() === 'welfare')?.region);
+
+        if (task.region === 'Punjab' && targetRegion === 'Sindh') {
+          return res.status(400).json({
+            success: false,
+            error: 'Cross-Region Assignment Violation: Cannot assign Punjab task to a Sindh regional member.',
+          });
+        }
+        if (task.region === 'Sindh' && targetRegion === 'Punjab') {
+          return res.status(400).json({
+            success: false,
+            error: 'Cross-Region Assignment Violation: Cannot assign Sindh task to a Punjab regional member.',
+          });
+        }
+      }
     }
 
     const prevAssignee = task.assignedMemberName || task.assignedTo || 'unassigned';
@@ -1477,6 +1967,20 @@ router.post('/tasks/:id/submit', protect, async (req, res) => {
       return res.status(403).json({ success: false, error: 'Only the assigned member can submit work for this task.' });
     }
 
+    if (task.status === 'assigned') {
+      return res.status(400).json({
+        success: false,
+        error: "Out-of-order rejection: Cannot submit deliverable while task is in 'assigned' status. Start work first (transition to in_progress).",
+      });
+    }
+
+    if (task.status === 'revision_requested') {
+      return res.status(400).json({
+        success: false,
+        error: "Mandatory Restart: Cannot submit directly from 'revision_requested'. Restart work first by setting status to 'in_progress'.",
+      });
+    }
+
     if (['approved', 'completed'].includes(task.status)) {
       return res.status(400).json({
         success: false,
@@ -1527,8 +2031,8 @@ router.post('/tasks/:id/submit', protect, async (req, res) => {
     if (!task.submissions) task.submissions = [];
     task.submissions.push(submissionEntry);
 
-    // Status advances to pending_testing for tester review
-    task.status = 'pending_testing';
+    // Status advances to submitted for review
+    task.status = 'submitted';
 
     // Legacy fields for backward compatibility
     task.submissionDetails = {
@@ -1539,7 +2043,7 @@ router.post('/tasks/:id/submit', protect, async (req, res) => {
 
     if (!task.history) task.history = [];
     task.history.push({
-      status: 'pending_testing',
+      status: 'submitted',
       updatedBy: req.user.name,
       role: req.user.role,
       notes: notes || `Deliverable v${nextVersion} submitted with ${formattedAttachments.length} attachment(s) for tester review.`,
@@ -2146,18 +2650,58 @@ router.post('/tasks/:id/final-approval', protect, async (req, res) => {
     // MANDATORY CRITICAL RESTRICTION:
     // ONLY the original owning department Head or Director (or Super Admin) can grant final approval!
     const isSuperAdmin = req.user.role === 'super_admin';
-    const callerDept = req.user.department || (req.user.role.startsWith('dept_') ? DEPT_ROLE_MAP[req.user.role]?.name : null);
-    const callerDesig = normalizeDesignation(req.user.designation);
+    const effectiveRole = req.user.activeRole || req.user.role;
+    const callerDept = req.user.activeDepartment || req.user.department || (effectiveRole.startsWith('dept_') ? DEPT_ROLE_MAP[effectiveRole]?.name : null);
+    const callerDesig = normalizeDesignation(req.user.activeDesignation || req.user.designation);
     const isOriginalDeptLead =
-      (callerDept?.toLowerCase() === task.originalDepartment?.toLowerCase() ||
-        (req.user.role.startsWith('dept_') &&
-          DEPT_ROLE_MAP[req.user.role]?.name?.toLowerCase() === task.originalDepartment?.toLowerCase())) &&
-      ['head', 'director'].includes(callerDesig || '');
+      effectiveRole.startsWith('dept_') &&
+      callerDept?.toLowerCase() === task.originalDepartment?.toLowerCase() &&
+      (!callerDesig || ['head', 'director', 'head_of_punjab', 'head_of_sindh'].includes(callerDesig));
 
     if (!isSuperAdmin && !isOriginalDeptLead) {
       return res.status(403).json({
         success: false,
         error: `Final Approval Forbidden: Only the Head or Director of the original owning department (${task.originalDepartment}) is authorized to give final approval. Testers, moderators, assistant directors, members, HR, Finance, and other department leadership are strictly prohibited.`,
+      });
+    }
+
+    // Welfare Regional Isolation check for final approval
+    if (task.originalDepartment === 'Welfare' && !isSuperAdmin) {
+      const { getWelfareRegionalScope } = require('../constants/roles');
+      const callerScope = getWelfareRegionalScope(req.user);
+      if (callerScope === 'Punjab') {
+        if (task.region === 'Sindh') {
+          return res.status(403).json({
+            success: false,
+            error: 'Regional Access Violation: Head of Punjab cannot approve or reject Sindh regional tasks.',
+          });
+        }
+        if (task.region === 'National') {
+          return res.status(403).json({
+            success: false,
+            error: 'Regional Access Violation: National Welfare tasks can only be approved by Super Admin.',
+          });
+        }
+      } else if (callerScope === 'Sindh') {
+        if (task.region === 'Punjab') {
+          return res.status(403).json({
+            success: false,
+            error: 'Regional Access Violation: Head of Sindh cannot approve or reject Punjab regional tasks.',
+          });
+        }
+        if (task.region === 'National') {
+          return res.status(403).json({
+            success: false,
+            error: 'Regional Access Violation: National Welfare tasks can only be approved by Super Admin.',
+          });
+        }
+      }
+    }
+
+    if (['assigned', 'in_progress'].includes(task.status)) {
+      return res.status(400).json({
+        success: false,
+        error: `Out-of-order rejection: Department Head cannot review task while in '${task.status}' status.`,
       });
     }
 
@@ -2247,18 +2791,58 @@ router.patch('/tasks/:id/review', protect, async (req, res) => {
 
     // Verify reviewer authority: ONLY original department Head/Director or Super Admin can approve/complete
     const isSuperAdmin = req.user.role === 'super_admin';
-    const callerDept = req.user.department || (req.user.role.startsWith('dept_') ? DEPT_ROLE_MAP[req.user.role]?.name : null);
-    const callerDesig = normalizeDesignation(req.user.designation);
+    const effectiveRole = req.user.activeRole || req.user.role;
+    const callerDept = req.user.activeDepartment || req.user.department || (effectiveRole.startsWith('dept_') ? DEPT_ROLE_MAP[effectiveRole]?.name : null);
+    const callerDesig = normalizeDesignation(req.user.activeDesignation || req.user.designation);
     const isOriginalDeptLead =
-      (callerDept?.toLowerCase() === task.originalDepartment?.toLowerCase() ||
-        (req.user.role.startsWith('dept_') &&
-          DEPT_ROLE_MAP[req.user.role]?.name?.toLowerCase() === task.originalDepartment?.toLowerCase())) &&
-      ['head', 'director'].includes(callerDesig || '');
+      effectiveRole.startsWith('dept_') &&
+      callerDept?.toLowerCase() === task.originalDepartment?.toLowerCase() &&
+      (!callerDesig || ['head', 'director', 'head_of_punjab', 'head_of_sindh'].includes(callerDesig));
 
     if (!isSuperAdmin && !isOriginalDeptLead) {
       return res.status(403).json({
         success: false,
         error: `Only the original department Head or Director (${task.originalDepartment}) or Super Admin is authorized to review or approve this submission.`,
+      });
+    }
+
+    // Welfare Regional Isolation check for review
+    if (task.originalDepartment === 'Welfare' && !isSuperAdmin) {
+      const { getWelfareRegionalScope } = require('../constants/roles');
+      const callerScope = getWelfareRegionalScope(req.user);
+      if (callerScope === 'Punjab') {
+        if (task.region === 'Sindh') {
+          return res.status(403).json({
+            success: false,
+            error: 'Regional Access Violation: Head of Punjab cannot review or approve Sindh regional tasks.',
+          });
+        }
+        if (task.region === 'National') {
+          return res.status(403).json({
+            success: false,
+            error: 'Regional Access Violation: National Welfare tasks can only be reviewed or approved by Super Admin.',
+          });
+        }
+      } else if (callerScope === 'Sindh') {
+        if (task.region === 'Punjab') {
+          return res.status(403).json({
+            success: false,
+            error: 'Regional Access Violation: Head of Sindh cannot review or approve Punjab regional tasks.',
+          });
+        }
+        if (task.region === 'National') {
+          return res.status(403).json({
+            success: false,
+            error: 'Regional Access Violation: National Welfare tasks can only be reviewed or approved by Super Admin.',
+          });
+        }
+      }
+    }
+
+    if (['assigned', 'in_progress'].includes(task.status)) {
+      return res.status(400).json({
+        success: false,
+        error: `Out-of-order rejection: Department Head cannot review task while in '${task.status}' status.`,
       });
     }
 
@@ -2336,6 +2920,23 @@ router.get('/members/:userId/tasks', protect, requireOwnershipOrPrivilege('userI
 
     if (!tasks || tasks.length === 0) {
       tasks = getMemoryTasksList().filter((t) => t.assignedTo?.toString() === userId.toString());
+    }
+
+    // Scoping for Department Heads: Filter returned tasks strictly to caller's active department and region
+    const effectiveRole = req.user.activeRole || req.user.role;
+    if (effectiveRole.startsWith('dept_') && req.user.role !== 'super_admin' && !req.user.isPrivilegedHR) {
+      const callerDept = (req.user.activeDepartment || req.user.department || DEPT_ROLE_MAP[effectiveRole]?.name || '').toLowerCase();
+      tasks = tasks.filter((t) => (t.department || '').toLowerCase() === callerDept);
+
+      if (callerDept === 'welfare') {
+        const { getWelfareRegionalScope } = require('../constants/roles');
+        const callerScope = getWelfareRegionalScope(req.user);
+        if (callerScope === 'Punjab') {
+          tasks = tasks.filter((t) => t.region !== 'Sindh');
+        } else if (callerScope === 'Sindh') {
+          tasks = tasks.filter((t) => t.region !== 'Punjab');
+        }
+      }
     }
 
     return res.json({ success: true, count: tasks.length, tasks });
