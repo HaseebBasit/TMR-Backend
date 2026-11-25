@@ -8,6 +8,9 @@ dotenv.config();
 
 const app = express();
 
+// Trust reverse proxy (Render, Cloudflare) for secure cookie handling and HTTPS detection
+app.set('trust proxy', 1);
+
 const allowedOrigins = [
   'http://localhost:3000',
   'http://127.0.0.1:3000',

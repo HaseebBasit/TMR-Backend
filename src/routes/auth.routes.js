@@ -77,10 +77,13 @@ async function withUserLock(userId, fn) {
 // Cookie helper with cross-site support for Vercel <-> Render
 function getCookieOptions(maxAge) {
   const isProd = process.env.NODE_ENV === 'production';
+  const isRender = Boolean(process.env.RENDER || process.env.RENDER_SERVICE_ID);
+  const useSecure = isProd || isRender || process.env.COOKIE_SECURE === 'true';
+
   return {
     httpOnly: true,
-    secure: isProd,
-    sameSite: isProd ? 'none' : 'lax',
+    secure: useSecure,
+    sameSite: useSecure ? 'none' : 'lax',
     path: '/',
     ...(maxAge ? { maxAge } : {}),
   };
