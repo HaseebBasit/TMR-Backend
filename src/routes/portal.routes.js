@@ -503,6 +503,22 @@ router.post('/super-admin/users/:id/regenerate-activation', protect, authorize('
       return res.status(404).json({ success: false, error: 'User not found.' });
     }
 
+    // Super Admin accounts cannot have activation links regenerated and cannot be deactivated
+    if (user.role === 'super_admin') {
+      return res.status(400).json({
+        success: false,
+        error: 'Cannot regenerate activation link for Super Admin account. Use password reset if credentials are required.',
+      });
+    }
+
+    // Active accounts cannot be forced into inactive status via activation regeneration
+    if (user.status === 'active' && !user.activationToken) {
+      return res.status(400).json({
+        success: false,
+        error: 'Cannot regenerate activation link: Account is already active. Use password reset if credentials are required.',
+      });
+    }
+
     const rawActivationToken = crypto.randomBytes(32).toString('hex');
     const hashedActivationToken = crypto.createHash('sha256').update(rawActivationToken).digest('hex');
     const activationExpires = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
@@ -604,7 +620,15 @@ router.patch('/super-admin/users/:id', protect, authorize('super_admin'), async 
       }
       user.designation = validation.designation;
     }
-    if (status) user.status = status;
+    if (status) {
+      if (user.role === 'super_admin' && (status === 'suspended' || status === 'inactive')) {
+        return res.status(400).json({
+          success: false,
+          error: 'Cannot suspend or deactivate Super Admin account.',
+        });
+      }
+      user.status = status;
+    }
     if (isPrivilegedHR !== undefined) user.isPrivilegedHR = Boolean(isPrivilegedHR);
 
     try {
