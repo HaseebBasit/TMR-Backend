@@ -265,6 +265,22 @@ const protect = async (req, res, next) => {
       user.designation = normalizeDesignation(user.designation || decoded.designation) || null;
     }
 
+    // Emergency Access Identification (RFC 8693)
+    if (decoded.isEmergencyAccess) {
+      user.isEmergencyAccess = true;
+      user.emergencySession = {
+        operatorId: decoded.act?.sub || 'emergency_operator',
+        operatorName: decoded.act?.name || 'Authorized Emergency Operator',
+        operatorEmail: decoded.act?.email || 'emergency-operator@system.rekhta.org',
+        keyId: decoded.act?.keyId || 'EMERGENCY-KEY',
+        reason: decoded.act?.reason || 'Technical emergency access',
+        initiatedAt: decoded.act?.initiatedAt || new Date().toISOString(),
+        expiresAt: decoded.exp ? decoded.exp * 1000 : Date.now() + 15 * 60 * 1000,
+      };
+      req.isEmergencyAccess = true;
+      req.emergencySession = user.emergencySession;
+    }
+
     // Account Status Gate: Suspended or inactive accounts are immediately blocked
     if (user.status !== 'active') {
       return res.status(403).json({

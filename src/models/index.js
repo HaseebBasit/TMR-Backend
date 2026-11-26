@@ -24,6 +24,7 @@ const LeaveRequest = require('./LeaveRequest');
 const Expense = require('./Expense');
 const Budget = require('./Budget');
 const Announcement = require('./Announcement');
+const EmergencyCredential = require('./EmergencyCredential');
 
 module.exports = {
   User,
@@ -43,4 +44,5 @@ module.exports = {
   Expense,
   Budget,
   Announcement,
+  EmergencyCredential,
 };

@@ -139,6 +139,24 @@ const passwordResetRateLimiter = createRateLimiter({
 });
 
 /**
+ * Emergency Access Rate Limiter:
+ * 5 requests per 15-minute window in production.
+ * Prevents key brute-forcing on emergency interface.
+ */
+const emergencyAccessRateLimiter = createRateLimiter({
+  name: 'emergency_access',
+  windowMs: 15 * 60 * 1000, // 15 minutes
+  max: 5,
+  getMax: () => {
+    if (process.env.RATE_LIMIT_EMERGENCY_MAX) {
+      return parseInt(process.env.RATE_LIMIT_EMERGENCY_MAX, 10);
+    }
+    return 5;
+  },
+  message: 'Too many emergency access attempts from this IP address. Please try again after 15 minutes.',
+});
+
+/**
  * Reset helper for testing isolation.
  */
 function clearAllRateLimitStores() {
@@ -163,6 +181,7 @@ module.exports = {
   createRateLimiter,
   loginRateLimiter,
   passwordResetRateLimiter,
+  emergencyAccessRateLimiter,
   clearAllRateLimitStores,
   clearRateLimitStore,
   getClientIp,

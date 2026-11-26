@@ -279,6 +279,14 @@ router.post('/login', loginRateLimiter, async (req, res) => {
  */
 router.post('/refresh', async (req, res) => {
   try {
+    if (req.cookies?.rekhta_emergency_mode) {
+      return res.status(401).json({
+        success: false,
+        error: 'Emergency access tokens cannot be refreshed. Please establish a new emergency session if needed.',
+        code: 'EMERGENCY_REFRESH_PROHIBITED',
+      });
+    }
+
     const token = req.cookies?.rekhta_refresh_token || req.body?.refreshToken;
 
     if (!token) {
