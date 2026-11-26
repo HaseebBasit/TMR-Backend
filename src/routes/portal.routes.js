@@ -1,5 +1,7 @@
 const express = require('express');
 const router = express.Router();
+const path = require('path');
+const fs = require('fs');
 const crypto = require('crypto');
 const bcrypt = require('bcryptjs');
 const {
@@ -722,6 +724,88 @@ router.post('/super-admin/users/bulk-generate-activations', protect, authorize('
     });
   } catch (err) {
     return res.status(500).json({ success: false, error: 'Failed to bulk-generate activation links.' });
+  }
+});
+
+/**
+ * @route   POST /api/super-admin/export-activation-pdf
+ * @desc    Super Admin exports official activation links PDF
+ * @access  Protected (Super Admin Only)
+ */
+router.post('/super-admin/export-activation-pdf', protect, authorize('super_admin'), async (req, res) => {
+  try {
+    const { links, departmentCode } = req.body || {};
+
+    let users = [];
+    try {
+      users = await User.find().sort({ email: 1 }).lean();
+    } catch {}
+
+    if (!users || users.length === 0) {
+      users = getMemoryUsersList();
+    }
+
+    let departments = [];
+    try {
+      departments = await Department.find({ status: 'active' }).sort({ code: 1 }).lean();
+    } catch {}
+
+    let doc;
+    let filename = 'TAMEER_E_REKHTA_ORGANIZATIONAL_ACTIVATION_LINKS_FINAL.pdf';
+
+    const normalizedDept = departmentCode ? departmentCode.toString().trim().toUpperCase() : null;
+    if (normalizedDept && ['LIT', 'CON', 'OAM', 'MED', 'HR', 'WEL'].includes(normalizedDept)) {
+      const { buildDepartmentActivationPdf, DEPARTMENT_CONFIGS } = require('../services/department-pdf-export.service');
+      filename = DEPARTMENT_CONFIGS[normalizedDept].filename;
+
+      const fs = require('fs');
+      const diskPath = path.join(__dirname, '..', '..', filename);
+      if ((!links || links.length === 0) && fs.existsSync(diskPath)) {
+        res.setHeader('Content-Type', 'application/pdf');
+        res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+        return fs.createReadStream(diskPath).pipe(res);
+      }
+
+      doc = buildDepartmentActivationPdf({
+        departmentCode: normalizedDept,
+        users,
+        sessionLinks: Array.isArray(links) ? links : [],
+        generatedAt: new Date(),
+      });
+    } else {
+      const { buildRedesignedActivationPdf } = require('../services/pdf-export.service');
+      doc = buildRedesignedActivationPdf({
+        users,
+        departments,
+        sessionLinks: Array.isArray(links) ? links : [],
+        generatedAt: new Date(),
+      });
+    }
+
+    // Audit Log: Action: ACTIVATION_LINKS_EXPORTED_PDF, Module: SUPER_ADMIN
+    const auditData = {
+      actorId: req.user._id || req.user.id,
+      actorName: req.user.name,
+      actorRole: 'super_admin',
+      action: 'ACTIVATION_LINKS_EXPORTED_PDF',
+      module: 'SUPER_ADMIN',
+      description: `Super Admin exported official organizational activation links PDF (${filename}).`,
+    };
+
+    try {
+      await AuditLog.create(auditData);
+    } catch {
+      recordMemoryAuditLog(auditData);
+    }
+
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+
+    doc.pipe(res);
+    doc.end();
+  } catch (err) {
+    console.error('[EXPORT-PDF-ERROR]', err);
+    return res.status(500).json({ success: false, error: 'Failed to export activation PDF.' });
   }
 });
 

@@ -198,12 +198,9 @@ router.post('/login', loginRateLimiter, async (req, res) => {
       ipAddress: req.ip,
     }).catch(() => null);
 
-    // For web portal browser requests, authenticate strictly via HTTP-only cookies.
-    // Suppress token in JSON payload unless caller explicitly requests programmatic API access.
-    const isProgrammaticClient =
-      req.headers['x-client-type'] === 'api-client' ||
-      req.headers['x-request-token'] === 'true';
-
+    // For web portal browser requests, authenticate strictly via HTTP-only cookies
+    // AND provide the JWT access token in the response body so clients can use
+    // Bearer Authorization headers reliably across same-origin proxies and cross-origin environments.
     return res.json({
       success: true,
       message: 'Login successful.',
@@ -226,7 +223,7 @@ router.post('/login', loginRateLimiter, async (req, res) => {
         isPrivilegedHR: Boolean(user.isPrivilegedHR),
         status: user.status,
       },
-      token: isProgrammaticClient ? accessToken : undefined,
+      token: accessToken,
     });
   } catch (err) {
     console.error('[Auth Error]:', err);
@@ -329,14 +326,10 @@ router.post('/refresh', async (req, res) => {
 
       setAuthCookies(res, newAccessToken, newRefreshToken);
 
-      const isProgrammaticClient =
-        req.headers['x-client-type'] === 'api-client' ||
-        req.headers['x-request-token'] === 'true';
-
       return res.json({
         success: true,
         message: 'Session refreshed successfully.',
-        token: isProgrammaticClient ? newAccessToken : undefined,
+        token: newAccessToken,
         user: {
           id: payload.id,
           name: user.name,
@@ -362,6 +355,7 @@ router.get('/me', protect, (req, res) => {
   return res.json({
     success: true,
     user: req.user,
+    token: req.token,
   });
 });
 
@@ -449,6 +443,7 @@ router.post('/switch-department', protect, async (req, res) => {
       activeDesignation: matchedMembership.designation,
       activeRegion: matchedMembership.region || null,
       user: payload,
+      token: accessToken,
     });
   } catch (err) {
     return res.status(500).json({ success: false, error: 'Failed to switch department context.' });
