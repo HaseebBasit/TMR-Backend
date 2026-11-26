@@ -7,6 +7,7 @@ const { User, AuditLog } = require('../models');
 const { normalizeDesignation } = require('../constants/roles');
 const {
   protect,
+  setAuthService,
   authorize,
   setMemoryUser,
   getMemoryUser,
@@ -89,7 +90,7 @@ async function withUserLock(userId, fn) {
   }
 }
 
-// Cookie helper with cross-site support for Vercel <-> Render
+// Cookie helper with first-party same-site support for Vercel <-> Render
 function getCookieOptions(maxAge) {
   const isProd = process.env.NODE_ENV === 'production';
   const isRender = Boolean(process.env.RENDER || process.env.RENDER_SERVICE_ID);
@@ -98,7 +99,7 @@ function getCookieOptions(maxAge) {
   return {
     httpOnly: true,
     secure: useSecure,
-    sameSite: useSecure ? 'none' : 'lax',
+    sameSite: 'lax',
     path: '/',
     ...(maxAge ? { maxAge } : {}),
   };
@@ -108,6 +109,15 @@ function setAuthCookies(res, accessToken, refreshToken) {
   res.cookie('rekhta_access_token', accessToken, getCookieOptions(1 * 60 * 60 * 1000)); // 1 hour
   res.cookie('rekhta_refresh_token', refreshToken, getCookieOptions(7 * 24 * 60 * 60 * 1000)); // 7 days
 }
+
+// Register token & cookie service with auth middleware for seamless session recovery
+if (typeof setAuthService === 'function') {
+  setAuthService({ generateTokens, setAuthCookies, getCookieOptions });
+}
+
+router.generateTokens = generateTokens;
+router.setAuthCookies = setAuthCookies;
+router.getCookieOptions = getCookieOptions;
 
 /**
  * @route   POST /api/auth/login

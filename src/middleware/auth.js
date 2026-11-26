@@ -72,6 +72,130 @@ const DEPT_ROLE_MAP = {
   dept_welfare: { name: 'Welfare', code: 'WEL' },
 };
 
+let authServiceHelper = null;
+const setAuthService = (helper) => {
+  authServiceHelper = helper;
+};
+
+/**
+ * Resolves active department context and verifies server-side membership
+ */
+const resolveDepartmentContext = (req, user) => {
+  const contextHeader = req.headers['x-department-context'] || req.headers['x-department'];
+  if (contextHeader && typeof contextHeader === 'string' && contextHeader.trim()) {
+    const requestedCtx = contextHeader.trim().toLowerCase();
+    if (user.role === 'super_admin') {
+      user.activeDepartment = contextHeader.trim();
+      user.activeDepartmentCode = contextHeader.trim().substring(0, 3).toUpperCase();
+      user.activeRole = 'super_admin';
+      user.activeDesignation = null;
+    } else {
+      let matched = null;
+      if (Array.isArray(user.memberships) && user.memberships.length > 0) {
+        matched = user.memberships.find(
+          (m) =>
+            m.department?.toLowerCase() === requestedCtx ||
+            m.departmentCode?.toLowerCase() === requestedCtx
+        );
+      }
+      if (!matched) {
+        const primaryName = (user.department || DEPT_ROLE_MAP[user.role]?.name || '').toLowerCase();
+        const primaryCode = (user.departmentCode || DEPT_ROLE_MAP[user.role]?.code || '').toLowerCase();
+        if (primaryName === requestedCtx || primaryCode === requestedCtx) {
+          matched = {
+            department: user.department || DEPT_ROLE_MAP[user.role]?.name,
+            departmentCode: user.departmentCode || DEPT_ROLE_MAP[user.role]?.code,
+            role: user.role,
+            designation: user.designation,
+            region: user.region || null,
+          };
+        }
+      }
+
+      // Strict Server-Side Gate: Never trust client-selected context without membership
+      if (!matched) {
+        return {
+          error: `Unauthorized department context: You do not hold an authorized membership in '${contextHeader}'.`,
+        };
+      }
+
+      user.activeMembership = matched;
+      user.activeDepartment = matched.department;
+      user.activeDepartmentCode = matched.departmentCode;
+      user.activeRole = matched.role;
+      user.activeDesignation = matched.designation;
+      user.activeRegion = matched.region || null;
+    }
+  } else {
+    // Default active department to primary membership or base department
+    const primaryMembership = Array.isArray(user.memberships) && user.memberships.find((m) => m.isPrimary);
+    user.activeMembership = primaryMembership || {
+      department: user.department || DEPT_ROLE_MAP[user.role]?.name || null,
+      departmentCode: user.departmentCode || DEPT_ROLE_MAP[user.role]?.code || null,
+      role: user.role,
+      designation: user.designation || null,
+      region: user.region || null,
+    };
+    user.activeDepartment = user.department || primaryMembership?.department || DEPT_ROLE_MAP[user.role]?.name || null;
+    user.activeDepartmentCode = user.departmentCode || primaryMembership?.departmentCode || DEPT_ROLE_MAP[user.role]?.code || null;
+    user.activeRole = primaryMembership?.role || user.role;
+    user.activeDesignation = user.designation || primaryMembership?.designation || null;
+    user.activeRegion = user.region || primaryMembership?.region || null;
+  }
+  return { success: true };
+};
+
+/**
+ * Handle refresh fallback when access token is missing or expired
+ */
+const handleRefreshFallback = async (req, res) => {
+  const refreshToken = req.cookies?.rekhta_refresh_token;
+  if (!refreshToken) return null;
+
+  try {
+    const REFRESH_SECRET = process.env.JWT_REFRESH_SECRET || 'rekhta_refresh_secret_2026_super_secure';
+    const decodedRefresh = jwt.verify(refreshToken, REFRESH_SECRET);
+
+    let user = null;
+    try {
+      user = await User.findById(decodedRefresh.id);
+    } catch {}
+
+    if (!user) {
+      user = getMemoryUser(decodedRefresh.id) || getMemoryUser(decodedRefresh.email);
+    }
+
+    if (!user || user.status !== 'active') return null;
+
+    // Check tokenVersion revocation
+    if (decodedRefresh.tokenVersion !== undefined && decodedRefresh.tokenVersion < (user.tokenVersion || 0)) {
+      return null;
+    }
+
+    // Enforce single-use active refresh token match
+    if (!user.refreshToken || user.refreshToken !== refreshToken) {
+      return null;
+    }
+
+    if (authServiceHelper && authServiceHelper.generateTokens) {
+      const { accessToken: newAccess, refreshToken: newRefresh } = authServiceHelper.generateTokens(user);
+      user.refreshToken = newRefresh;
+      try {
+        await user.save();
+      } catch {
+        setMemoryUser(user);
+      }
+      if (authServiceHelper.setAuthCookies) {
+        authServiceHelper.setAuthCookies(res, newAccess, newRefresh);
+      }
+      return { user, token: newAccess };
+    }
+  } catch {
+    return null;
+  }
+  return null;
+};
+
 /**
  * Protect middleware: Verifies JWT access token and active account status
  */
@@ -85,6 +209,18 @@ const protect = async (req, res, next) => {
   }
 
   if (!token) {
+    // Attempt seamless session restoration via valid HTTP-only refresh cookie
+    const refreshed = await handleRefreshFallback(req, res);
+    if (refreshed) {
+      const ctxResult = resolveDepartmentContext(req, refreshed.user);
+      if (ctxResult.error) {
+        return res.status(403).json({ success: false, error: ctxResult.error });
+      }
+      req.user = refreshed.user;
+      req.token = refreshed.token;
+      return next();
+    }
+
     return res.status(401).json({
       success: false,
       error: 'Authentication required. No session token provided.',
@@ -149,67 +285,9 @@ const protect = async (req, res, next) => {
     }
 
     // Department Context Resolution & Server-Side Membership Verification
-    const contextHeader = req.headers['x-department-context'] || req.headers['x-department'];
-    if (contextHeader && typeof contextHeader === 'string' && contextHeader.trim()) {
-      const requestedCtx = contextHeader.trim().toLowerCase();
-      if (user.role === 'super_admin') {
-        user.activeDepartment = contextHeader.trim();
-        user.activeDepartmentCode = contextHeader.trim().substring(0, 3).toUpperCase();
-        user.activeRole = 'super_admin';
-        user.activeDesignation = null;
-      } else {
-        let matched = null;
-        if (Array.isArray(user.memberships) && user.memberships.length > 0) {
-          matched = user.memberships.find(
-            (m) =>
-              m.department?.toLowerCase() === requestedCtx ||
-              m.departmentCode?.toLowerCase() === requestedCtx
-          );
-        }
-        if (!matched) {
-          const primaryName = (user.department || DEPT_ROLE_MAP[user.role]?.name || '').toLowerCase();
-          const primaryCode = (user.departmentCode || DEPT_ROLE_MAP[user.role]?.code || '').toLowerCase();
-          if (primaryName === requestedCtx || primaryCode === requestedCtx) {
-            matched = {
-              department: user.department || DEPT_ROLE_MAP[user.role]?.name,
-              departmentCode: user.departmentCode || DEPT_ROLE_MAP[user.role]?.code,
-              role: user.role,
-              designation: user.designation,
-              region: user.region || null,
-            };
-          }
-        }
-
-        // Strict Server-Side Gate: Never trust client-selected context without membership
-        if (!matched) {
-          return res.status(403).json({
-            success: false,
-            error: `Unauthorized department context: You do not hold an authorized membership in '${contextHeader}'.`,
-          });
-        }
-
-        user.activeMembership = matched;
-        user.activeDepartment = matched.department;
-        user.activeDepartmentCode = matched.departmentCode;
-        user.activeRole = matched.role;
-        user.activeDesignation = matched.designation;
-        user.activeRegion = matched.region || null;
-      }
-    } else {
-      // Default active department to primary membership or base department
-      const primaryMembership = Array.isArray(user.memberships) && user.memberships.find((m) => m.isPrimary);
-      user.activeMembership = primaryMembership || {
-        department: user.department || DEPT_ROLE_MAP[user.role]?.name || null,
-        departmentCode: user.departmentCode || DEPT_ROLE_MAP[user.role]?.code || null,
-        role: user.role,
-        designation: user.designation || null,
-        region: user.region || null,
-      };
-      user.activeDepartment = user.department || primaryMembership?.department || DEPT_ROLE_MAP[user.role]?.name || null;
-      user.activeDepartmentCode = user.departmentCode || primaryMembership?.departmentCode || DEPT_ROLE_MAP[user.role]?.code || null;
-      user.activeRole = primaryMembership?.role || user.role;
-      user.activeDesignation = user.designation || primaryMembership?.designation || null;
-      user.activeRegion = user.region || primaryMembership?.region || null;
+    const ctxResult = resolveDepartmentContext(req, user);
+    if (ctxResult.error) {
+      return res.status(403).json({ success: false, error: ctxResult.error });
     }
 
     req.user = user;
@@ -217,6 +295,18 @@ const protect = async (req, res, next) => {
     next();
   } catch (err) {
     if (err.name === 'TokenExpiredError') {
+      // If access token expired, attempt seamless session restoration via HTTP-only refresh cookie
+      const refreshed = await handleRefreshFallback(req, res);
+      if (refreshed) {
+        const ctxResult = resolveDepartmentContext(req, refreshed.user);
+        if (ctxResult.error) {
+          return res.status(403).json({ success: false, error: ctxResult.error });
+        }
+        req.user = refreshed.user;
+        req.token = refreshed.token;
+        return next();
+      }
+
       return res.status(401).json({
         success: false,
         error: 'Session expired. Please refresh your token.',
@@ -792,6 +882,7 @@ const requireAccountCreateAuthority = (req, res, next) => {
 
 module.exports = {
   protect,
+  setAuthService,
   authorize,
   requireDepartmentScope,
   requireOwnershipOrPrivilege,
