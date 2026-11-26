@@ -59,9 +59,15 @@ const HR_DESIGNATIONS = Object.freeze({
   HR_MEMBER: 'hr_member',
 });
 
+const FINANCE_DESIGNATIONS = Object.freeze({
+  HEAD_OF_FINANCE: 'head_of_finance',
+  FINANCE_MEMBER: 'finance_member',
+});
+
 const ALL_APPROVED_DESIGNATIONS = Object.freeze([
   ...Object.values(OPERATIONAL_DESIGNATIONS),
   ...Object.values(HR_DESIGNATIONS),
+  ...Object.values(FINANCE_DESIGNATIONS),
 ]);
 
 // Title-case / display aliases normalized to canonical lowercase snake_case
@@ -79,6 +85,9 @@ const DESIGNATION_ALIAS_MAP = Object.freeze({
   hr_director: 'hr_director',
   hr_coordination_incharge: 'hr_coordination_incharge',
   hr_member: 'hr_member',
+  head_of_finance: 'head_of_finance',
+  finance_head: 'head_of_finance',
+  finance_member: 'finance_member',
   // Title-case variants
   'Head': 'head',
   'Head of Punjab': 'head_of_punjab',
@@ -96,6 +105,11 @@ const DESIGNATION_ALIAS_MAP = Object.freeze({
   'HR Coordination In-charge': 'hr_coordination_incharge',
   'HR Coordination Incharge': 'hr_coordination_incharge',
   'HR Member': 'hr_member',
+  'Head of Finance': 'head_of_finance',
+  'Finance Head': 'head_of_finance',
+  'head of finance': 'head_of_finance',
+  'Head Of Finance': 'head_of_finance',
+  'Finance Member': 'finance_member',
   'Volunteer / Team Member': 'volunteer',
 });
 
@@ -135,7 +149,14 @@ const ROLE_DESIGNATION_COMPATIBILITY = Object.freeze({
     OPERATIONAL_DESIGNATIONS.VOLUNTEER,
     OPERATIONAL_DESIGNATIONS.MEMBER,
   ]),
-  [TECHNICAL_ROLES.FINANCE]: Object.freeze([null, undefined, 'none', 'member']),
+  [TECHNICAL_ROLES.FINANCE]: Object.freeze([
+    null,
+    undefined,
+    'none',
+    FINANCE_DESIGNATIONS.HEAD_OF_FINANCE,
+    FINANCE_DESIGNATIONS.FINANCE_MEMBER,
+    OPERATIONAL_DESIGNATIONS.MEMBER,
+  ]),
   [TECHNICAL_ROLES.MEMBER]: Object.freeze([OPERATIONAL_DESIGNATIONS.MEMBER, OPERATIONAL_DESIGNATIONS.VOLUNTEER]),
 });
 
@@ -179,15 +200,15 @@ function validateRoleDesignation(role, rawDesignation) {
     };
   }
 
-  // Finance must remain a separate functional role without operational or HR authority
+  // Finance must remain a separate functional governance role without operational or HR authority
   if (role === TECHNICAL_ROLES.FINANCE) {
-    if (normalized !== 'member') {
+    if (!['member', 'head_of_finance', 'finance_member'].includes(normalized)) {
       return {
         valid: false,
         error: `Finance role cannot receive operational or HR leadership designation '${rawDesignation}'.`,
       };
     }
-    return { valid: true, designation: 'member' };
+    return { valid: true, designation: normalized };
   }
 
   // Member role cannot claim leadership designations (only member and volunteer are permitted)
@@ -582,6 +603,7 @@ module.exports = {
   OPERATIONAL_DEPT_ROLES,
   OPERATIONAL_DESIGNATIONS,
   HR_DESIGNATIONS,
+  FINANCE_DESIGNATIONS,
   ALL_APPROVED_DESIGNATIONS,
   DESIGNATION_ALIAS_MAP,
   ROLE_DESIGNATION_COMPATIBILITY,
