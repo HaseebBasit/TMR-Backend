@@ -13,6 +13,7 @@
 // ---------------------------------------------------------------------------
 const TECHNICAL_ROLES = Object.freeze({
   SUPER_ADMIN: 'super_admin',
+  DEVELOPER: 'developer',
   DEPT_LITERATURE: 'dept_literature',
   DEPT_MEDIA: 'dept_media',
   DEPT_MARKETING: 'dept_marketing',
@@ -64,10 +65,16 @@ const FINANCE_DESIGNATIONS = Object.freeze({
   FINANCE_MEMBER: 'finance_member',
 });
 
+const DEVELOPER_DESIGNATIONS = Object.freeze({
+  DEVELOPER: 'developer',
+  SYSTEM_LEAD: 'system_lead',
+});
+
 const ALL_APPROVED_DESIGNATIONS = Object.freeze([
   ...Object.values(OPERATIONAL_DESIGNATIONS),
   ...Object.values(HR_DESIGNATIONS),
   ...Object.values(FINANCE_DESIGNATIONS),
+  ...Object.values(DEVELOPER_DESIGNATIONS),
 ]);
 
 // Title-case / display aliases normalized to canonical lowercase snake_case
@@ -88,6 +95,8 @@ const DESIGNATION_ALIAS_MAP = Object.freeze({
   head_of_finance: 'head_of_finance',
   finance_head: 'head_of_finance',
   finance_member: 'finance_member',
+  developer: 'developer',
+  system_lead: 'system_lead',
   // Title-case variants
   'Head': 'head',
   'Head of Punjab': 'head_of_punjab',
@@ -110,6 +119,8 @@ const DESIGNATION_ALIAS_MAP = Object.freeze({
   'head of finance': 'head_of_finance',
   'Head Of Finance': 'head_of_finance',
   'Finance Member': 'finance_member',
+  'Developer': 'developer',
+  'System Lead': 'system_lead',
   'Volunteer / Team Member': 'volunteer',
 });
 
@@ -135,6 +146,7 @@ function normalizeDesignation(designation) {
 // ---------------------------------------------------------------------------
 const ROLE_DESIGNATION_COMPATIBILITY = Object.freeze({
   [TECHNICAL_ROLES.SUPER_ADMIN]: Object.freeze([null, undefined, 'none']),
+  [TECHNICAL_ROLES.DEVELOPER]: Object.freeze([null, undefined, 'none', 'developer', 'system_lead']),
   [TECHNICAL_ROLES.DEPT_LITERATURE]: Object.freeze(Object.values(OPERATIONAL_DESIGNATIONS)),
   [TECHNICAL_ROLES.DEPT_MEDIA]: Object.freeze(Object.values(OPERATIONAL_DESIGNATIONS)),
   [TECHNICAL_ROLES.DEPT_MARKETING]: Object.freeze(Object.values(OPERATIONAL_DESIGNATIONS)),
@@ -198,6 +210,17 @@ function validateRoleDesignation(role, rawDesignation) {
       valid: false,
       error: 'Super Admin holds global system authority and cannot be assigned an ordinary departmental designation.',
     };
+  }
+
+  // Developer is a system-level technical role separate from Super Admin and departmental hierarchy
+  if (role === TECHNICAL_ROLES.DEVELOPER) {
+    if (normalized && !['developer', 'system_lead'].includes(normalized)) {
+      return {
+        valid: false,
+        error: `Developer role cannot receive departmental or HR leadership designation '${rawDesignation}'.`,
+      };
+    }
+    return { valid: true, designation: normalized || 'developer' };
   }
 
   // Finance must remain a separate functional governance role without operational or HR authority
@@ -283,6 +306,9 @@ const CAPABILITIES = Object.freeze({
   FINANCE_DONATION_VERIFY: 'finance_donation_verify',
   FINANCE_DATA_EXPORT: 'finance_data_export',
   ACCOUNT_CREATE_MANAGE: 'account_create_manage',
+  DEVELOPER_DIAGNOSTICS_VIEW: 'developer_diagnostics_view',
+  DEVELOPER_IMPERSONATE: 'developer_impersonate',
+  DEVELOPER_AUDIT_VIEW: 'developer_audit_view',
 });
 
 // Approved administrative password reset designations
@@ -520,6 +546,18 @@ function hasCapability(user, capability, context = {}) {
     return false;
   }
 
+  // 22. Developer System Diagnostics & Audited Impersonation
+  // Strictly Developer role only.
+  if (
+    [
+      CAPABILITIES.DEVELOPER_DIAGNOSTICS_VIEW,
+      CAPABILITIES.DEVELOPER_IMPERSONATE,
+      CAPABILITIES.DEVELOPER_AUDIT_VIEW,
+    ].includes(capability)
+  ) {
+    return role === TECHNICAL_ROLES.DEVELOPER;
+  }
+
   return false;
 }
 
@@ -604,6 +642,7 @@ module.exports = {
   OPERATIONAL_DESIGNATIONS,
   HR_DESIGNATIONS,
   FINANCE_DESIGNATIONS,
+  DEVELOPER_DESIGNATIONS,
   ALL_APPROVED_DESIGNATIONS,
   DESIGNATION_ALIAS_MAP,
   ROLE_DESIGNATION_COMPATIBILITY,

@@ -125,6 +125,7 @@ app.use('/api/hr', require('./routes/hr.routes').router);
 app.use('/api', require('./routes/hr.routes').router);
 app.use('/api/finance', require('./routes/finance.routes').router);
 app.use('/api', require('./routes/finance.routes').router);
+app.use('/api/developer', require('./routes/developer.routes'));
 app.use('/api', require('./routes/portal.routes'));
 
 const PORT = process.env.PORT || 5000;

@@ -50,6 +50,7 @@ const UserSchema = new mongoose.Schema(
       type: String,
       enum: [
         'super_admin',
+        'developer',
         'dept_literature',
         'dept_media',
         'dept_marketing',
@@ -76,13 +77,15 @@ const UserSchema = new mongoose.Schema(
         'HR',
         'Finance',
         'Welfare',
+        'Engineering',
+        'Administration',
         null,
       ],
       default: null,
     },
     departmentCode: {
       type: String,
-      enum: ['LIT', 'MED', 'MKT', 'OUT', 'OAM', 'CON', 'HR', 'FIN', 'WEL', null],
+      enum: ['LIT', 'MED', 'MKT', 'OUT', 'OAM', 'CON', 'HR', 'FIN', 'WEL', 'ENG', 'ADM', null],
       default: null,
     },
     departmentId: { type: mongoose.Schema.Types.ObjectId, ref: 'Department' },
@@ -134,6 +137,10 @@ const UserSchema = new mongoose.Schema(
     activationGeneratedAt: { type: Date },
     activationRevokedAt: { type: Date },
     lastLogin: { type: Date },
+    mustChangePassword: { type: Boolean, default: false },
+    mfaEnabled: { type: Boolean, default: false },
+    mfaSecret: { type: String, default: null },
+    mfaRecoveryCodes: [{ type: String }],
   },
   { timestamps: true }
 );

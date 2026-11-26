@@ -14,6 +14,7 @@ const {
   DEPT_ROLE_MAP,
 } = require('../middleware/auth');
 const { sendEmail } = require('../services/email.service');
+const { verifyTotp, findMatchingRecoveryCode } = require('../services/mfa.service');
 const { validateProductionSecrets } = require('../config/secrets');
 const { loginRateLimiter, passwordResetRateLimiter } = require('../middleware/rateLimiter');
 
@@ -167,6 +168,36 @@ router.post('/login', loginRateLimiter, async (req, res) => {
         success: false,
         error: `Account ${user.status}. Access has been suspended. Please contact Super Admin.`,
         accountStatus: user.status,
+      });
+    }
+
+    // 3a. MFA Gate: If user has MFA enabled, require TOTP verification before issuing session
+    if (user.mfaEnabled) {
+      const mfaTempToken = jwt.sign(
+        { id: (user._id || user.id)?.toString(), email: user.email, mfaPending: true },
+        JWT_SECRET,
+        { expiresIn: '5m' }
+      );
+      return res.json({
+        success: true,
+        requireMfa: true,
+        mfaToken: mfaTempToken,
+        message: 'Two-factor authentication code required.',
+      });
+    }
+
+    // 3b. Force Password Change Gate: If user must change password on initial login
+    if (user.mustChangePassword) {
+      const changePasswordTempToken = jwt.sign(
+        { id: (user._id || user.id)?.toString(), email: user.email, passwordChangePending: true },
+        JWT_SECRET,
+        { expiresIn: '10m' }
+      );
+      return res.json({
+        success: true,
+        requirePasswordChange: true,
+        tempToken: changePasswordTempToken,
+        message: 'Password change is required on initial login before access is granted.',
       });
     }
 
@@ -343,6 +374,234 @@ router.post('/refresh', async (req, res) => {
     });
   } catch (err) {
     return res.status(401).json({ success: false, error: 'Invalid or expired refresh token.' });
+  }
+});
+
+/**
+ * @route   POST /api/auth/mfa/verify
+ * @desc    Verify TOTP or recovery code during login
+ * @access  Public (Requires mfaToken)
+ */
+router.post('/mfa/verify', async (req, res) => {
+  try {
+    const { mfaToken, code, recoveryCode } = req.body || {};
+    if (!mfaToken) {
+      return res.status(400).json({ success: false, error: 'MFA session token is required.' });
+    }
+    if (!code && !recoveryCode) {
+      return res.status(400).json({ success: false, error: 'TOTP code or recovery code is required.' });
+    }
+
+    let decoded;
+    try {
+      decoded = jwt.verify(mfaToken, JWT_SECRET);
+    } catch {
+      return res.status(401).json({ success: false, error: 'MFA session expired or invalid. Please sign in again.' });
+    }
+
+    if (!decoded.mfaPending || !decoded.id) {
+      return res.status(401).json({ success: false, error: 'Invalid MFA verification token.' });
+    }
+
+    let user = null;
+    try {
+      user = await User.findById(decoded.id);
+    } catch {}
+    if (!user) {
+      user = getMemoryUser(decoded.id) || getMemoryUser(decoded.email);
+    }
+    if (!user) {
+      return res.status(404).json({ success: false, error: 'User not found.' });
+    }
+
+    let isValid = false;
+    let usedRecoveryIndex = -1;
+
+    if (code) {
+      isValid = verifyTotp(code.toString().trim(), user.mfaSecret);
+    } else if (recoveryCode) {
+      usedRecoveryIndex = await findMatchingRecoveryCode(recoveryCode, user.mfaRecoveryCodes);
+      if (usedRecoveryIndex !== -1) {
+        isValid = true;
+        // Invalidate single-use recovery code
+        user.mfaRecoveryCodes.splice(usedRecoveryIndex, 1);
+        try {
+          await user.save();
+        } catch {
+          setMemoryUser(user);
+        }
+      }
+    }
+
+    if (!isValid) {
+      await AuditLog.create({
+        actorId: user._id || user.id,
+        actorName: user.name,
+        actorRole: user.role,
+        action: 'MFA_VERIFICATION_FAILED',
+        module: 'AUTH',
+        targetId: (user._id || user.id)?.toString(),
+        targetModel: 'User',
+        description: `Failed MFA verification attempt for ${user.email}.`,
+        ipAddress: req.ip,
+      }).catch(() => null);
+
+      return res.status(401).json({
+        success: false,
+        error: 'Invalid authentication code. Please check your authenticator app.',
+      });
+    }
+
+    // Audit successful MFA
+    await AuditLog.create({
+      actorId: user._id || user.id,
+      actorName: user.name,
+      actorRole: user.role,
+      action: 'MFA_VERIFIED',
+      module: 'AUTH',
+      targetId: (user._id || user.id)?.toString(),
+      targetModel: 'User',
+      description: `MFA verified successfully for ${user.email} (${usedRecoveryIndex !== -1 ? 'Used Backup Recovery Code' : 'TOTP App'}).`,
+      ipAddress: req.ip,
+    }).catch(() => null);
+
+    // If password change is still pending on first login:
+    if (user.mustChangePassword) {
+      const changePasswordTempToken = jwt.sign(
+        { id: (user._id || user.id)?.toString(), email: user.email, passwordChangePending: true },
+        JWT_SECRET,
+        { expiresIn: '10m' }
+      );
+      return res.json({
+        success: true,
+        mfaVerified: true,
+        requirePasswordChange: true,
+        tempToken: changePasswordTempToken,
+        message: 'MFA verified. Password change is required on initial login.',
+      });
+    }
+
+    // Complete login: generate session tokens
+    const { accessToken, refreshToken, payload } = generateTokens(user);
+    user.refreshToken = refreshToken;
+    user.lastLogin = new Date();
+    try {
+      await user.save();
+    } catch {
+      setMemoryUser(user);
+    }
+
+    setAuthCookies(res, accessToken, refreshToken);
+
+    await AuditLog.create({
+      actorId: user._id || user.id,
+      actorName: user.name,
+      actorRole: user.role,
+      action: 'USER_LOGIN',
+      module: 'AUTH',
+      targetId: (user._id || user.id)?.toString(),
+      targetModel: 'User',
+      description: `User ${user.name} (${user.email}) logged in successfully with MFA as ${user.role}.`,
+      ipAddress: req.ip,
+    }).catch(() => null);
+
+    return res.json({
+      success: true,
+      message: 'MFA authentication successful. Login complete.',
+      user: {
+        id: payload.id,
+        name: user.name,
+        email: user.email,
+        role: payload.role || user.role,
+        department: payload.department,
+        designation: payload.designation,
+        status: user.status,
+      },
+      token: accessToken,
+    });
+  } catch (err) {
+    console.error('[MFA Verify Error]:', err);
+    return res.status(500).json({ success: false, error: 'MFA verification service failure.' });
+  }
+});
+
+/**
+ * @route   POST /api/auth/change-initial-password
+ * @desc    Enforce password change on initial login (Developer & provisioned accounts)
+ * @access  Public (Requires tempToken) or Authenticated
+ */
+router.post('/change-initial-password', async (req, res) => {
+  try {
+    const { tempToken, newPassword } = req.body || {};
+    if (!newPassword || typeof newPassword !== 'string' || newPassword.length < 10) {
+      return res.status(400).json({
+        success: false,
+        error: 'New password must be at least 10 characters long with sufficient complexity.',
+      });
+    }
+
+    let userId = null;
+    if (tempToken) {
+      try {
+        const decoded = jwt.verify(tempToken, JWT_SECRET);
+        userId = decoded.id;
+      } catch {
+        return res.status(401).json({ success: false, error: 'Password change session expired. Please sign in again.' });
+      }
+    } else if (req.headers.authorization) {
+      const token = req.headers.authorization.replace('Bearer ', '');
+      try {
+        const decoded = jwt.verify(token, JWT_SECRET);
+        userId = decoded.id;
+      } catch {}
+    }
+
+    if (!userId) {
+      return res.status(401).json({ success: false, error: 'Authentication token required to change password.' });
+    }
+
+    let user = null;
+    try {
+      user = await User.findById(userId);
+    } catch {}
+    if (!user) {
+      user = getMemoryUser(userId);
+    }
+    if (!user) {
+      return res.status(404).json({ success: false, error: 'User not found.' });
+    }
+
+    // Enforce password update
+    user.password = await bcrypt.hash(newPassword, 10);
+    user.mustChangePassword = false;
+    user.tokenVersion = (user.tokenVersion || 0) + 1;
+    user.refreshToken = null;
+
+    try {
+      await user.save();
+    } catch {
+      setMemoryUser(user);
+    }
+
+    await AuditLog.create({
+      actorId: user._id || user.id,
+      actorName: user.name,
+      actorRole: user.role,
+      action: 'INITIAL_PASSWORD_CHANGED',
+      module: 'AUTH',
+      targetId: (user._id || user.id)?.toString(),
+      targetModel: 'User',
+      description: `Initial password change completed for ${user.email}.`,
+      ipAddress: req.ip,
+    }).catch(() => null);
+
+    return res.json({
+      success: true,
+      message: 'Password changed successfully. Please log in with your new password.',
+    });
+  } catch (err) {
+    console.error('[Change Password Error]:', err);
+    return res.status(500).json({ success: false, error: 'Failed to change password.' });
   }
 });
 
