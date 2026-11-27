@@ -140,18 +140,18 @@ const passwordResetRateLimiter = createRateLimiter({
 
 /**
  * Emergency Access Rate Limiter:
- * 5 requests per 15-minute window in production.
- * Prevents key brute-forcing on emergency interface.
+ * 20 requests per 15-minute window in production.
+ * Prevents key brute-forcing on emergency interface while allowing multi-step verification.
  */
 const emergencyAccessRateLimiter = createRateLimiter({
   name: 'emergency_access',
   windowMs: 15 * 60 * 1000, // 15 minutes
-  max: 5,
+  max: 20,
   getMax: () => {
     if (process.env.RATE_LIMIT_EMERGENCY_MAX) {
       return parseInt(process.env.RATE_LIMIT_EMERGENCY_MAX, 10);
     }
-    return 5;
+    return 20;
   },
   message: 'Too many emergency access attempts from this IP address. Please try again after 15 minutes.',
 });
