@@ -2,25 +2,27 @@
  * Phase 10M Live Production Smoke Verification
  * Target Environment: https://tameer-e-rekhta.vercel.app
  * 
- * Verifies all 11 production criteria:
+ * Verifies all production criteria:
  * 1. Emergency Access page loads successfully (HTTP 200).
  * 2. Gateway reports configured and active (HTTP 200, configured: true, active: true).
- * 3. Valid key + reason reaches the MFA verification stage (HTTP 200, requireMfa: true).
- * 4. Invalid key is rejected (HTTP 401).
- * 5. Invalid TOTP is rejected (HTTP 401).
- * 6. Hard Barriers: Super Admin and Developer are strictly non-targetable (HTTP 403).
- * 7. Valid TOTP establishes emergency session (HTTP 200, strictly 900s / 15m expiration).
- * 8. Refresh is prohibited (HTTP 401 EMERGENCY_REFRESH_PROHIBITED).
- * 9. Immediate session termination clears cookies and ends session (HTTP 200).
- * 10. Target user's password, MFA, tokenVersion, and status are 100% unmodified.
- * 11. Normal organizational login remains fully intact and uninterrupted.
+ * 3. Invalid key is rejected (HTTP 401).
+ * 4. Hard Barrier: Super Admin is strictly non-targetable (HTTP 403).
+ * 5. Hard Barrier: Developer is strictly non-targetable (HTTP 403).
+ * 6. Inactive target account rejected (HTTP 400).
+ * 7. Valid key + reason reaches the MFA verification stage (HTTP 200, requireMfa: true).
+ * 8. Invalid TOTP is rejected (HTTP 401).
+ * 9. Valid TOTP establishes emergency session (HTTP 200, strictly 900s / 15m expiration).
+ * 10. Emergency session accesses /api/auth/me with proper claims and RBAC.
+ * 11. Refresh is strictly prohibited (HTTP 401 EMERGENCY_REFRESH_PROHIBITED).
+ * 12. Immediate session termination clears cookies and ends session (HTTP 200).
+ * 13. Target user's password, MFA, tokenVersion, and status are 100% unmodified.
+ * 14. Immutable audit logs recorded across all emergency operations.
  */
 
 const path = require('path');
 const fs = require('fs');
 const https = require('https');
 const mongoose = require('mongoose');
-const jwt = require('jsonwebtoken');
 
 // Load environment
 require('dotenv').config({ path: path.join(__dirname, '..', '.env') });
@@ -143,20 +145,19 @@ async function runProductionSmokeTests() {
   const mongoUri = process.env.MONGODB_URI;
   if (!mongoUri) throw new Error('MONGODB_URI missing from environment.');
   const conn = await mongoose.createConnection(mongoUri).asPromise();
-  const db = conn.useDb('tameer_rekhta');
-  const usersCol = db.collection('users');
-  const emergencyCol = db.collection('emergencycredentials');
-  const auditLogsCol = db.collection('auditlogs');
+  const rawDb = conn.db;
+  const usersCol = rawDb.collection('users');
+  const auditLogsCol = rawDb.collection('auditlogs');
 
-  // Select target account for emergency access test: Finance Head
-  const targetEmail = 'ahmadmaqsood@rekhta.org';
+  // Select active target account for emergency access test: Literature Lead
+  const targetEmail = 'noorulhuda@rekhta.org';
   const targetBefore = await usersCol.findOne({ email: targetEmail });
   if (!targetBefore) throw new Error(`Target account ${targetEmail} not found in production DB.`);
 
   const superAdminBefore = await usersCol.findOne({ email: 'tameerrekhtaadmin@rekhta.org' });
   const developerBefore = await usersCol.findOne({ email: 'rekhtadeveloper@rekhta.org' });
 
-  console.log(`[TARGET ACCOUNT] Selected: ${targetBefore.name} (${targetBefore.email}) - Role: ${targetBefore.role}\n`);
+  console.log(`[TARGET ACCOUNT] Selected: ${targetBefore.name} (${targetBefore.email}) - Role: ${targetBefore.role} - Status: ${targetBefore.status}\n`);
 
   // ---------------------------------------------------------------------------
   // Check 1: Emergency Access Page Loads Successfully
@@ -235,9 +236,28 @@ async function runProductionSmokeTests() {
   );
 
   // ---------------------------------------------------------------------------
-  // Check 6: Valid Key Stage 1 Acceptance & Target User Resolution
+  // Check 6: Inactive Account Rejection Gate
   // ---------------------------------------------------------------------------
-  console.log('\n--- Step 6: Valid Key Acceptance & Target Resolution ---');
+  console.log('\n--- Step 6: Inactive Account Rejection Gate ---');
+  const inactiveRes = await httpsRequest({
+    method: 'POST',
+    path: '/api/emergency/verify-key',
+    body: {
+      targetEmail: 'ahmadmaqsood@rekhta.org',
+      accessKey: emergencyKey,
+      reason: 'Smoke test inactive target account check',
+    },
+  });
+  assert(inactiveRes.status === 400, 'Inactive target account rejected with HTTP 400 Bad Request');
+  assert(
+    typeof inactiveRes.data.error === 'string' && inactiveRes.data.error.includes('status'),
+    'Inactive rejection explains account status requirement'
+  );
+
+  // ---------------------------------------------------------------------------
+  // Check 7: Valid Key Stage 1 Acceptance & Target User Resolution
+  // ---------------------------------------------------------------------------
+  console.log('\n--- Step 7: Valid Key Acceptance & Target Resolution ---');
   const validKeyRes = await httpsRequest({
     method: 'POST',
     path: '/api/emergency/verify-key',
@@ -254,12 +274,16 @@ async function runProductionSmokeTests() {
     validKeyRes.data.targetUser?.email?.toLowerCase() === targetEmail.toLowerCase(),
     `Target user profile resolved: ${validKeyRes.data.targetUser?.name} (${validKeyRes.data.targetUser?.email})`
   );
+  assert(
+    validKeyRes.data.targetUser?.role === 'dept_literature',
+    `Target user role preserved: ${validKeyRes.data.targetUser?.role}`
+  );
   const emergencyToken = validKeyRes.data.emergencyToken;
 
   // ---------------------------------------------------------------------------
-  // Check 7: Invalid TOTP Code Rejection
+  // Check 8: Invalid TOTP Code Rejection
   // ---------------------------------------------------------------------------
-  console.log('\n--- Step 7: Invalid MFA TOTP Rejection ---');
+  console.log('\n--- Step 8: Invalid MFA TOTP Rejection ---');
   const invalidTotpRes = await httpsRequest({
     method: 'POST',
     path: '/api/emergency/verify-mfa',
@@ -272,9 +296,9 @@ async function runProductionSmokeTests() {
   assert(invalidTotpRes.data.success === false, 'Invalid TOTP response contains success: false');
 
   // ---------------------------------------------------------------------------
-  // Check 8: Valid MFA Verification & 15-Minute Emergency Session Issuance
+  // Check 9: Valid MFA Verification & 15-Minute Emergency Session Issuance
   // ---------------------------------------------------------------------------
-  console.log('\n--- Step 8: Valid MFA Verification & 15-Minute Emergency Session ---');
+  console.log('\n--- Step 9: Valid MFA Verification & 15-Minute Emergency Session ---');
   const validTotpCode = generateTotp(totpSecret);
   const mfaRes = await httpsRequest({
     method: 'POST',
@@ -308,9 +332,9 @@ async function runProductionSmokeTests() {
   const cookieHeader = `rekhta_access_token=${accessTokenCookie}; rekhta_emergency_mode=true`;
 
   // ---------------------------------------------------------------------------
-  // Check 9: Emergency Session Authentication & RBAC Verification
+  // Check 10: Emergency Session Authentication & RBAC Verification
   // ---------------------------------------------------------------------------
-  console.log('\n--- Step 9: Emergency Session Authentication & RBAC ---');
+  console.log('\n--- Step 10: Emergency Session Authentication & RBAC ---');
   const meRes = await httpsRequest({
     method: 'GET',
     path: '/api/auth/me',
@@ -331,9 +355,9 @@ async function runProductionSmokeTests() {
   );
 
   // ---------------------------------------------------------------------------
-  // Check 10: Refresh Prohibition Verification
+  // Check 11: Refresh Prohibition Verification
   // ---------------------------------------------------------------------------
-  console.log('\n--- Step 10: Refresh Prohibition ---');
+  console.log('\n--- Step 11: Refresh Prohibition ---');
   const refreshRes = await httpsRequest({
     method: 'POST',
     path: '/api/auth/refresh',
@@ -348,9 +372,9 @@ async function runProductionSmokeTests() {
   );
 
   // ---------------------------------------------------------------------------
-  // Check 11: Immediate Emergency Session Termination
+  // Check 12: Immediate Emergency Session Termination
   // ---------------------------------------------------------------------------
-  console.log('\n--- Step 11: Immediate Session Termination ---');
+  console.log('\n--- Step 12: Immediate Session Termination ---');
   const endSessionRes = await httpsRequest({
     method: 'POST',
     path: '/api/emergency/end-session',
@@ -374,9 +398,9 @@ async function runProductionSmokeTests() {
   );
 
   // ---------------------------------------------------------------------------
-  // Check 12: Production Database Account Immutability (Read-Only)
+  // Check 13: Target Account Immutability (Read-Only DB Inspection)
   // ---------------------------------------------------------------------------
-  console.log('\n--- Step 12: Production Database Post-Verification ---');
+  console.log('\n--- Step 13: Production Database Post-Verification ---');
   const targetAfter = await usersCol.findOne({ email: targetEmail });
   const superAdminAfter = await usersCol.findOne({ email: 'tameerrekhtaadmin@rekhta.org' });
   const developerAfter = await usersCol.findOne({ email: 'rekhtadeveloper@rekhta.org' });
@@ -425,7 +449,7 @@ async function runProductionSmokeTests() {
   await conn.close();
 
   console.log('\n========================================================================');
-  console.log(`SMOKE VERIFICATION SUMMARY: ${passedChecks}/${totalChecks} PASSED, ${failedChecks} FAILED`);
+  console.log(`LIVE PRODUCTION SMOKE VERIFICATION RESULT: ${passedChecks}/${totalChecks} PASSED, ${failedChecks} FAILED`);
   console.log('========================================================================\n');
 
   if (failedChecks > 0) {

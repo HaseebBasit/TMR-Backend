@@ -13,18 +13,39 @@ const IV_LENGTH = 12; // 96 bits for AES-GCM
 const PREFIX = 'enc:v1:';
 
 /**
- * Derive a 256-bit key from EMERGENCY_ENCRYPTION_KEY or validated JWT_SECRET.
+ * Derives ordered candidate keys for encryption and decryption.
+ * Primary: Dedicated EMERGENCY_ENCRYPTION_KEY or production MONGODB_URI.
+ * Secondary: Validated access secret fallback (for testing and staging environments).
  */
-function getEncryptionKey() {
-  const customKey = process.env.EMERGENCY_ENCRYPTION_KEY;
-  if (customKey && typeof customKey === 'string' && customKey.trim().length >= 32) {
-    return crypto.createHash('sha256').update(customKey.trim()).digest();
+function getCandidateKeys() {
+  const keys = [];
+
+  // 1. Explicit production emergency encryption key
+  const customKey = process.env.EMERGENCY_ENCRYPTION_KEY || process.env.DATABASE_ENCRYPTION_KEY;
+  if (customKey && typeof customKey === 'string' && customKey.trim().length >= 16) {
+    keys.push(crypto.createHash('sha256').update(customKey.trim()).digest());
   }
 
+  // 2. Production infrastructure credential key (shared securely across Render and provisioning scripts)
+  const infraSecret = process.env.MONGODB_URI;
+  if (infraSecret && typeof infraSecret === 'string' && infraSecret.length >= 20) {
+    keys.push(crypto.createHash('sha256').update(`rekhta_at_rest_encryption_salt_2026:${infraSecret}`).digest());
+  }
+
+  // 3. Environment access secret fallback (for test isolation and staging)
   const validated = validateProductionSecrets();
   const sourceSecret = validated.accessSecret || 'rekhta_default_encryption_source_secret_2026';
-  // Salt-hardened SHA-256 derivation to isolate encryption key from token signing
-  return crypto.createHash('sha256').update(`rekhta_at_rest_encryption_salt_2026:${sourceSecret}`).digest();
+  keys.push(crypto.createHash('sha256').update(`rekhta_at_rest_encryption_salt_2026:${sourceSecret}`).digest());
+
+  return keys;
+}
+
+/**
+ * Get primary 256-bit encryption key.
+ */
+function getEncryptionKey() {
+  const candidates = getCandidateKeys();
+  return candidates[0];
 }
 
 /**
@@ -48,6 +69,7 @@ function encryptAtRest(plaintext) {
 
 /**
  * Decrypt ciphertext string at rest using AES-256-GCM.
+ * Iterates through candidate keys with tamper-evident authentication tag verification.
  */
 function decryptAtRest(cipherPayload) {
   if (!cipherPayload || typeof cipherPayload !== 'string') {
@@ -69,18 +91,28 @@ function decryptAtRest(cipherPayload) {
   const iv = Buffer.from(ivHex, 'hex');
   const authTag = Buffer.from(tagHex, 'hex');
 
-  const decipher = crypto.createDecipheriv(ALGORITHM, getEncryptionKey(), iv);
-  decipher.setAuthTag(authTag);
+  const candidates = getCandidateKeys();
+  let lastErr = null;
 
-  let decrypted = decipher.update(encryptedHex, 'hex', 'utf8');
-  decrypted += decipher.final('utf8');
+  for (const key of candidates) {
+    try {
+      const decipher = crypto.createDecipheriv(ALGORITHM, key, iv);
+      decipher.setAuthTag(authTag);
+      let decrypted = decipher.update(encryptedHex, 'hex', 'utf8');
+      decrypted += decipher.final('utf8');
+      return decrypted;
+    } catch (err) {
+      lastErr = err;
+    }
+  }
 
-  return decrypted;
+  throw new Error(`[EncryptionService] Decryption failed across candidate keys: ${lastErr?.message}`);
 }
 
 module.exports = {
   encryptAtRest,
   decryptAtRest,
   getEncryptionKey,
+  getCandidateKeys,
   PREFIX,
 };
