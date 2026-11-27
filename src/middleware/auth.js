@@ -267,6 +267,9 @@ const protect = async (req, res, next) => {
 
     // Emergency Access Identification (RFC 8693)
     if (decoded.isEmergencyAccess) {
+      if (typeof user.toObject === 'function') {
+        user = user.toObject();
+      }
       user.isEmergencyAccess = true;
       user.emergencySession = {
         operatorId: decoded.act?.sub || 'emergency_operator',

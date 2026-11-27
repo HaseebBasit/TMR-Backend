@@ -310,15 +310,15 @@ async function runProductionSmokeTests() {
   });
   assert(mfaRes.status === 200, 'Valid TOTP accepted with HTTP 200 OK');
   assert(mfaRes.data.success === true, 'Emergency session established (success: true)');
-  assert(mfaRes.data.isEmergencyAccess === true, 'Response marks isEmergencyAccess: true');
+  assert(mfaRes.data.user?.isEmergencyAccess === true, 'Response user marks isEmergencyAccess: true');
   assert(mfaRes.data.sessionExpiresIn === 900, 'Session lifetime strictly 900 seconds (15 minutes)');
   assert(
-    Boolean(mfaRes.data.emergencySession?.expiresAt),
-    `Emergency session expiresAt confirmed: ${mfaRes.data.emergencySession?.expiresAt}`
+    mfaRes.data.user?.act?.email === 'emergency-operator@system.rekhta.org',
+    'Attributed operator identity: emergency-operator@system.rekhta.org'
   );
   assert(
-    mfaRes.data.emergencySession?.operatorEmail === 'emergency-operator@system.rekhta.org',
-    'Attributed operator identity: emergency-operator@system.rekhta.org'
+    mfaRes.data.user?.act?.sub === 'emergency_operator',
+    'Attributed operator sub: emergency_operator'
   );
 
   const accessTokenCookie = extractCookie(mfaRes.headers, 'rekhta_access_token');

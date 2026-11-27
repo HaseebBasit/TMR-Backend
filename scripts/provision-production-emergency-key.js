@@ -91,7 +91,8 @@ async function provision() {
   );
 
   // Step 5: Store new emergency credential record
-  const keyId = `EMERGENCY-OPERATOR-KEY-${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, '0')}${String(now.getDate()).padStart(2, '0')}`;
+  const keySuffix = crypto.randomBytes(3).toString('hex').toUpperCase();
+  const keyId = `EMERGENCY-OPERATOR-KEY-${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, '0')}${String(now.getDate()).padStart(2, '0')}-${keySuffix}`;
   const emergencyDoc = {
     keyId,
     keyHash,
